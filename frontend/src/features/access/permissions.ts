@@ -13,7 +13,6 @@ export type Capability =
   | "customers"
   | "employees"
   | "finance"
-  | "documents"
   | "notifications.admin"
   /** Give roles and change employment status in CRM settings. Admin only. */
   | "staff.admin";
@@ -28,7 +27,6 @@ const ALL: Capability[] = [
   "customers",
   "employees",
   "finance",
-  "documents",
   "notifications.admin",
   "staff.admin",
 ];
@@ -44,7 +42,6 @@ const BY_ROLE: Record<string, ReadonlySet<Capability>> = {
     "customers",
     "employees",
     "finance",
-    "documents",
   ]),
 };
 

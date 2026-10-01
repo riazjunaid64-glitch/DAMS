@@ -39,21 +39,12 @@ namespace DAMS.Application.Services
                 await EnsureUniquePhoneAndCnicAsync(dto.Phone, dto.CNIC, excludeCustomerId: null);
                 var created = BuildCustomer(dto, createdByUserId);
                 _context.Customers.Add(created);
-                try
-                {
-                    await _context.SaveChangesAsync();
-                }
-                catch
-                {
-                    _context.Entry(created).State = EntityState.Detached;
-                    throw;
-                }
+                await SaveNewCustomerWithDocumentsAsync(created,
+                    createdByUserId.HasValue
+                        ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
+                        : null);
                 return created;
             });
-            await TryAssignDefaultDocumentsAsync(customer,
-                createdByUserId.HasValue
-                    ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
-                    : null);
 
             return await BuildResponseAsync(customer);
         }
@@ -412,8 +403,7 @@ namespace DAMS.Application.Services
             ApplyPhone(customer, phone);
 
             _context.Customers.Add(customer);
-            await _context.SaveChangesAsync();
-            await TryAssignDefaultDocumentsAsync(customer, null);
+            await SaveNewCustomerWithDocumentsAsync(customer, null);
 
             return new CustomerResolution(customer.Id, WasCreated: true);
         }
@@ -497,34 +487,55 @@ namespace DAMS.Application.Services
             return query;
         }
 
-        private async Task TryAssignDefaultDocumentsAsync(Customer customer, CustomerDocumentActor? actor)
+        /// <summary>
+        /// Writes the customer and the documents whose switch is on in one save. If the document
+        /// rows cannot be written, the customer is still saved and the background job fills the gap.
+        /// </summary>
+        private async Task SaveNewCustomerWithDocumentsAsync(Customer customer, CustomerDocumentActor? actor)
         {
+            var prepared = false;
             try
             {
-                await CustomerDocumentAssignment.ReconcileCustomerAsync(_context, customer, actor);
+                await CustomerDocumentAssignment.AddDefaultsForNewCustomerAsync(_context, customer, actor);
+                prepared = true;
                 await _context.SaveChangesAsync();
+                return;
+            }
+            catch (Exception ex) when (prepared)
+            {
+                DetachAdvisoryDocuments(customer);
+                _logger.LogWarning(ex,
+                    "Customer was created without its document defaults; reconciliation will retry.");
             }
             catch (Exception ex)
             {
-                // Documents are advisory. A missing table during a rolling deployment, a transient
-                // database failure, or an assignment conflict must never turn a committed customer
-                // (and therefore a booking) into a failed core workflow. Remove failed tracked rows so
-                // the scoped context can safely continue; the reconciliation worker retries later.
-                var advisoryEntries = _context.ChangeTracker.Entries()
-                             .Where(e => e.Entity is CustomerDocumentRequirement or CustomerDocumentAuditEntry)
-                             .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
-                             .ToList();
-                var failedRequirements = advisoryEntries.Select(e => e.Entity)
-                    .OfType<CustomerDocumentRequirement>().ToList();
-                foreach (var entry in advisoryEntries)
-                    entry.State = EntityState.Detached;
-                foreach (var requirement in failedRequirements)
-                    customer.DocumentRequirements.Remove(requirement);
-
                 _logger.LogWarning(ex,
-                    "Customer {CustomerId} was created without its advisory document defaults; reconciliation will retry.",
-                    customer.Id);
+                    "Document defaults could not be prepared; the customer is saved without them.");
             }
+
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch
+            {
+                _context.Entry(customer).State = EntityState.Detached;
+                throw;
+            }
+        }
+
+        private void DetachAdvisoryDocuments(Customer customer)
+        {
+            var advisoryEntries = _context.ChangeTracker.Entries()
+                .Where(e => e.Entity is CustomerDocumentRequirement or CustomerDocumentAuditEntry)
+                .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                .ToList();
+            var failedRequirements = advisoryEntries.Select(e => e.Entity)
+                .OfType<CustomerDocumentRequirement>().ToList();
+            foreach (var entry in advisoryEntries)
+                entry.State = EntityState.Detached;
+            foreach (var requirement in failedRequirements)
+                customer.DocumentRequirements.Remove(requirement);
         }
 
         private static void EnsureWeakMatchDoesNotConflict(

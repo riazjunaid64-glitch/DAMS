@@ -29,9 +29,9 @@ public sealed class CustomerDocumentReconciliationService
     public async Task<int> ReconcileBatchAsync(CancellationToken cancellationToken = default)
     {
         var ids = await _context.Customers.AsNoTracking()
-            .Where(customer => customer.Status == CustomerStatus.Active
+            .Where(customer => customer.Status != CustomerStatus.Blocked
                 && _context.CustomerDocumentCategories.Any(category =>
-                    category.IsActive && category.AssignToNewCustomers
+                    category.AsksEveryCustomer && !category.IsHidden && !category.IsOther
                     && !_context.CustomerDocumentRequirements.Any(requirement =>
                         requirement.CustomerId == customer.Id && requirement.CategoryId == category.Id)))
             .OrderBy(customer => customer.Id)

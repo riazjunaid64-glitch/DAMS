@@ -1,7 +1,5 @@
 export type DocumentStatus = "Needed" | "Uploaded" | "NotNeeded";
 
-export type AssignmentMode = "None" | "NewCustomersOnly" | "AllActiveCustomers" | "SelectedCustomers";
-
 export interface DocumentVersion {
   id: number;
   versionNumber: number;
@@ -50,17 +48,13 @@ export interface DocumentChecklist {
   availableTypes: DocumentTypeOption[];
 }
 
-export interface DocumentCategory {
+export interface DocumentSetupItem {
   id: number;
   name: string;
-  code: string;
-  description?: string | null;
-  isRequiredByDefault: boolean;
-  displayOrder: number;
-  isActive: boolean;
-  assignToNewCustomers: boolean;
-  usageCount: number;
-  createdAt: string;
-  updatedAt?: string | null;
-  concurrencyToken: string;
+  asksEveryCustomer: boolean;
+}
+
+export interface DocumentSetupList {
+  nonBlockedCustomerCount: number;
+  documents: DocumentSetupItem[];
 }

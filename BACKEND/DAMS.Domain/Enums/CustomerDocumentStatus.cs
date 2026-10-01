@@ -33,12 +33,4 @@ namespace DAMS.Domain.Enums
         MarkedNotNeeded = 21,
         DocumentAdded = 22
     }
-
-    public enum CustomerDocumentAssignmentMode
-    {
-        None = 0,
-        NewCustomersOnly = 1,
-        AllActiveCustomers = 2,
-        SelectedCustomers = 3
-    }
 }

@@ -129,18 +129,17 @@ public sealed class SqlServerProductionInvariantTests
         {
             var documents = new CustomerDocumentService(failing, new NullPrivateStorage(),
                 NullLogger<CustomerDocumentService>.Instance);
-            await Assert.ThrowsAsync<InvalidOperationException>(() => documents.CreateCategoryAsync(
-                new CreateCustomerDocumentCategoryDto
-                {
-                    Name = "Atomic category", Code = "atomic_sql", IsRequiredByDefault = true,
-                    AssignmentMode = CustomerDocumentAssignmentMode.AllActiveCustomers
-                }, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
+            var created = await documents.CreateDocumentAsync(
+                new SaveDocumentNameDto { Name = "Atomic category" },
+                new CustomerDocumentActor(Actor.UserId, Actor.DisplayName));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => documents.SetAsksEveryCustomerAsync(
+                created.Id, true, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
         }
         await using (var verify = new AppDbContext(options))
         {
-            Assert.False(await verify.CustomerDocumentCategories.AnyAsync(c => c.Code == "atomic_sql"));
-            Assert.False(await verify.CustomerDocumentRequirements.AnyAsync(r => r.Category != null
-                && r.Category.Code == "atomic_sql"));
+            var category = await verify.CustomerDocumentCategories.SingleAsync(c => c.Name == "Atomic category");
+            Assert.False(category.AsksEveryCustomer);
+            Assert.False(await verify.CustomerDocumentRequirements.AnyAsync(r => r.CategoryId == category.Id));
 
             verify.BookingCommissions.Add(Commission(bookingId, partnerId, BookingCommissionStatus.Pending, 100m));
             await verify.SaveChangesAsync();
@@ -5647,14 +5646,11 @@ public sealed class SqlServerProductionInvariantTests
             var documents = new CustomerDocumentService(db, new NullPrivateStorage(),
                 NullLogger<CustomerDocumentService>.Instance);
             var actor = new CustomerDocumentActor(Actor.UserId, Actor.DisplayName);
-            var category = await documents.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
-            {
-                Name = "Retry probe proof", Code = "retry_probe_proof", IsRequiredByDefault = true,
-                AssignmentMode = CustomerDocumentAssignmentMode.SelectedCustomers,
-                SelectedCustomerIds = [customer.Id]
-            }, actor);
+            var category = await documents.CreateDocumentAsync(
+                new SaveDocumentNameDto { Name = "Retry probe proof" }, actor);
+            await documents.SetAsksEveryCustomerAsync(category.Id, true, actor);
 
-            // Assignment ran inside the create, so the requirement exists.
+            // The switch created the Needed copy.
             var requirement = await db.CustomerDocumentRequirements.AsNoTracking()
                 .SingleAsync(r => r.CategoryId == category.Id && r.CustomerId == customer.Id);
 
@@ -7649,6 +7645,60 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal(CustomerDocumentStatus.Needed, waivedAudit.PreviousStatus);
             Assert.Equal(CustomerDocumentStatus.NotNeeded, waivedAudit.NewStatus);
             Assert.Equal(CustomerDocumentAction.Waived, waivedAudit.Action);
+        }
+    }
+
+    [SqlServerFact]
+    public async Task DocumentSetup_SwitchStartsOnOnlyForActiveRequired_AndOtherIsMarked()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20261001010833_CustomerDocumentsThreeStatuses");
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                VALUES (N'Doc Setup', N'03001112233', 0, 0, '2020-01-01');
+                DECLARE @c int = SCOPE_IDENTITY();
+                INSERT INTO [CustomerDocumentRequirements]
+                    ([CustomerId], [Name], [IsRequired], [DisplayOrder], [Status], [CreatedAt], [UpdatedAt])
+                VALUES (@c, N'Kept', 1, 1, 0, '2020-01-01', '2020-01-01');
+
+                INSERT INTO [CustomerDocumentCategories]
+                    ([Name], [Code], [IsRequiredByDefault], [DisplayOrder], [IsActive], [AssignToNewCustomers], [CreatedAt])
+                VALUES
+                    (N'Active required', N'active_required', 1, 200, 1, 0, '2020-01-01'),
+                    (N'Active optional', N'active_optional', 0, 210, 1, 1, '2020-01-01'),
+                    (N'Inactive required', N'inactive_required', 1, 220, 0, 1, '2020-01-01'),
+                    (N'Twin', N'twin_a', 0, 230, 1, 0, '2020-01-01'),
+                    (N'Twin', N'twin_b', 0, 240, 1, 0, '2020-01-01');
+                """);
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var rows = await db.CustomerDocumentCategories.AsNoTracking().ToDictionaryAsync(c => c.Name);
+            Assert.True(rows["CNIC Front"].AsksEveryCustomer);
+            Assert.False(rows["CNIC Front"].IsOther);
+            Assert.False(rows["Passport"].AsksEveryCustomer);
+            Assert.True(rows["Other"].IsOther);
+            Assert.False(rows["Other"].AsksEveryCustomer);
+            Assert.True(rows["Active required"].AsksEveryCustomer);
+            Assert.False(rows["Active required"].IsHidden);
+            Assert.False(rows["Active optional"].AsksEveryCustomer);
+            Assert.False(rows["Inactive required"].AsksEveryCustomer);
+            Assert.False(rows["Inactive required"].IsHidden);
+            Assert.False(rows["Twin"].AsksEveryCustomer);
+            Assert.Contains(rows.Keys, name => name.StartsWith("Twin (", StringComparison.Ordinal));
+
+            var kept = await db.CustomerDocumentRequirements.AsNoTracking().SingleAsync(r => r.Name == "Kept");
+            Assert.False(kept.IsSuppressed);
         }
     }
 

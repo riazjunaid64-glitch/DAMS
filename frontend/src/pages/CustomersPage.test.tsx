@@ -79,6 +79,8 @@ describe("Customers list (KAN-79)", () => {
     expect(screen.getAllByText("128").length).toBeGreaterThan(0);
     expect(screen.getAllByText("19").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Document setup" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Document setup" }));
+    expect(screen.getByTestId("where").textContent).toBe("/customers/document-setup");
     expect(screen.getByRole("button", { name: "New customer" })).toBeTruthy();
     expect(screen.getAllByText("Blocked").length).toBeGreaterThan(0);
     expect(screen.getAllByText("2 needed").length).toBeGreaterThan(0);

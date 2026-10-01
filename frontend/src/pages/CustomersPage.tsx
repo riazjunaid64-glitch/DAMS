@@ -184,7 +184,7 @@ function CustomersWorkspace() {
                 iconOnly
                 icon={<IconSettings size={18} />}
                 aria-label="Document setup"
-                onClick={() => navigate("/customer-document-categories")}
+                onClick={() => navigate("/customers/document-setup")}
               />
               <Button
                 iconOnly
@@ -198,7 +198,7 @@ function CustomersWorkspace() {
               <Button
                 variant="outline"
                 icon={<IconSettings size={16} />}
-                onClick={() => navigate("/customer-document-categories")}
+                onClick={() => navigate("/customers/document-setup")}
               >
                 Document setup
               </Button>

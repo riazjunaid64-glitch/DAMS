@@ -1,4 +1,5 @@
 import { useId, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { Spinner } from "./Button.tsx";
 import { cx } from "./cx.ts";
 import { FieldShell, type FieldBaseProps } from "./FieldShell.tsx";
 import type { Option } from "./types.ts";
@@ -123,15 +124,24 @@ export function Checkbox({ checked, onChange, label, disabled, className }: Chec
   );
 }
 
+type ToggleProps = CheckProps & {
+  /** Keeps the label for screen readers and hides it on screen. */
+  hideLabel?: boolean;
+  /** Spinner in the track; the switch cannot be clicked again until this clears. */
+  loading?: boolean;
+};
+
 /** On / off switch; green when on. */
-export function Toggle({ checked, onChange, label, disabled, className }: CheckProps) {
+export function Toggle({ checked, onChange, label, disabled, className, hideLabel = false, loading = false }: ToggleProps) {
+  const busy = disabled || loading;
   return (
-    <label className={cx(choiceRowClass, "font-ui", className)}>
+    <label className={cx(choiceRowClass, "font-ui", hideLabel && "min-h-0 w-fit gap-0", className)}>
       <button
         type="button"
         role="switch"
         aria-checked={checked}
-        disabled={disabled}
+        aria-busy={loading || undefined}
+        disabled={busy}
         onClick={() => onChange(!checked)}
         className={cx(
           "relative h-7 w-11 shrink-0 cursor-pointer rounded-full transition-colors disabled:cursor-not-allowed",
@@ -139,12 +149,18 @@ export function Toggle({ checked, onChange, label, disabled, className }: CheckP
           checked ? "bg-success" : "bg-line-input",
         )}
       >
-        <span
-          aria-hidden="true"
-          className={cx("absolute top-1 left-1 size-5 rounded-full bg-card shadow-sm transition-transform", checked && "translate-x-4")}
-        />
+        {loading ? (
+          <span className="absolute inset-0 flex items-center justify-center">
+            <Spinner className={cx("size-3.5", checked ? "text-white" : "text-ink-2")} />
+          </span>
+        ) : (
+          <span
+            aria-hidden="true"
+            className={cx("absolute top-1 left-1 size-5 rounded-full bg-card shadow-sm transition-transform", checked && "translate-x-4")}
+          />
+        )}
       </button>
-      {label}
+      <span className={hideLabel ? "sr-only" : undefined}>{label}</span>
     </label>
   );
 }
