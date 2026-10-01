@@ -7805,6 +7805,66 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     [SqlServerFact]
+    public async Task CreateCustomer_AfterATransientFailure_RetriesToOneCustomerWithDocumentDefaults()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+            await db.Database.MigrateAsync();
+
+        // The first customer insert fails with an error the strategy is told to retry. The
+        // rolled-back attempt's customer and document rows stay tracked unless the retry drops
+        // them, and the second save would then insert a second customer.
+        var transient = new FailOnceTransientlyOnCustomerInsert();
+        var retrying = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlServer(database.ConnectionString, sql => sql.EnableRetryOnFailure(
+                3, TimeSpan.FromMilliseconds(10), [FailOnceTransientlyOnCustomerInsert.ErrorNumber]))
+            .AddInterceptors(transient)
+            .Options;
+
+        int customerId;
+        await using (var db = new AppDbContext(retrying))
+        {
+            var created = await new CustomerService(db).CreateCustomerAsync(
+                new CreateCustomerDto { FullName = "Retried customer", Phone = "0300-5550099" },
+                Actor.UserId, Actor.DisplayName);
+
+            Assert.True(transient.Failed);
+            customerId = created.Id;
+            var trackedCustomer = Assert.Single(db.ChangeTracker.Entries<Customer>());
+            Assert.Equal(customerId, trackedCustomer.Entity.Id);
+            Assert.Equal(EntityState.Unchanged, trackedCustomer.State);
+            Assert.DoesNotContain(db.ChangeTracker.Entries(), entry => entry.State == EntityState.Added);
+
+            var trackedRequirements = db.ChangeTracker.Entries<CustomerDocumentRequirement>()
+                .Select(entry => entry.Entity).ToList();
+            Assert.Equal(3, trackedRequirements.Count);
+            Assert.All(trackedRequirements, requirement =>
+            {
+                Assert.Equal(customerId, requirement.CustomerId);
+                Assert.Equal(EntityState.Unchanged, db.Entry(requirement).State);
+            });
+            Assert.Equal(3, db.ChangeTracker.Entries<CustomerDocumentAuditEntry>().Count());
+        }
+
+        await using (var verify = new AppDbContext(Options(database.ConnectionString)))
+        {
+            Assert.Equal(1, await verify.Customers.CountAsync());
+            var customer = await verify.Customers.SingleAsync();
+            Assert.Equal(customerId, customer.Id);
+            Assert.Equal("3005550099", customer.NormalizedPhone);
+
+            var requirements = await verify.CustomerDocumentRequirements.AsNoTracking()
+                .OrderBy(r => r.CategoryId)
+                .ToListAsync();
+            Assert.Equal(new[] { "CNIC Front", "CNIC Back", "Customer Photograph" },
+                requirements.Select(r => r.Name).ToArray());
+            Assert.All(requirements, requirement => Assert.Equal(customerId, requirement.CustomerId));
+            Assert.Equal(3, requirements.Select(r => r.CategoryId).Distinct().Count());
+            Assert.Equal(3, await verify.CustomerDocumentAuditEntries.CountAsync(a => a.CustomerId == customerId));
+        }
+    }
+
+    [SqlServerFact]
     public async Task CustomerNormalizedPhoneBackfill_StoresTheNationalNumber()
     {
         await using var database = await SqlTestDatabase.CreateAsync();
@@ -7882,6 +7942,38 @@ public sealed class SqlServerProductionInvariantTests
         await using var command = new SqlCommand(sql, connection);
         command.Parameters.AddWithValue("@id", id);
         return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    /// <summary>Turns the first customer insert into a SQL error the test's execution strategy is
+    /// told to treat as transient — a deadlock victim, in effect. The retry's insert is left alone.</summary>
+    private sealed class FailOnceTransientlyOnCustomerInsert : DbCommandInterceptor
+    {
+        public const int ErrorNumber = 50001;
+        public bool Failed { get; private set; }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            FailFirstCustomerInsert(command);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            FailFirstCustomerInsert(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void FailFirstCustomerInsert(DbCommand command)
+        {
+            if (!Failed && command.CommandText.Contains("INSERT INTO [Customers]", StringComparison.Ordinal))
+            {
+                Failed = true;
+                command.CommandText = $"THROW {ErrorNumber}, 'Simulated transient failure.', 1;";
+            }
+        }
     }
 
     /// <summary>Turns the first command that writes a lead's final reference into a SQL error the
