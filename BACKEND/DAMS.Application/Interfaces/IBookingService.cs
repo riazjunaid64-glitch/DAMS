@@ -13,6 +13,9 @@ namespace DAMS.Application.Interfaces
 
         Task<BookingListDto> GetBookingsAsync(BookingFilterDto filter);
 
+        /// <summary>Every booking of a customer, newest first, with the figures the booking page shows. Never cut off.</summary>
+        Task<List<CustomerBookingDto>> GetCustomerBookingsAsync(int customerId);
+
         /// <summary>Bookings per status (and the total, cancelled included) for the filter's search, project and customer; its status is ignored.</summary>
         Task<BookingStatusCountsDto> GetBookingStatusCountsAsync(BookingFilterDto filter);
 

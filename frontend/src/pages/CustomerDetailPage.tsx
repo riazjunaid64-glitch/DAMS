@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import { ConfirmDialog, EmptyState, Notice, Tabs, Button as UiButton, IconUsers, useToast } from "../components/ui";
@@ -7,21 +7,14 @@ import { can } from "../features/access/permissions.ts";
 import CustomerDocumentsPanel from "../features/customerDocuments/CustomerDocumentsPanel.tsx";
 import type { DocumentChecklist } from "../features/customerDocuments/types.ts";
 import { BlockCustomerDialog } from "../features/customers/BlockCustomerDialog.tsx";
+import { CustomerBookings } from "../features/customers/CustomerBookings.tsx";
+import type { CustomerBooking } from "../features/customers/customerBookings.ts";
 import { CustomerHeader } from "../features/customers/CustomerHeader.tsx";
 import { CustomerOverview } from "../features/customers/CustomerOverview.tsx";
 import { EditCustomerDialog } from "../features/customers/EditCustomerDialog.tsx";
 import type { CustomerDetail } from "../features/customers/customerForm.ts";
 
 type Props = { user: User | null };
-
-interface BookingSummary {
-  id: number;
-  bookingReference: string;
-  status: string;
-  projectName: string;
-  unitNumber: string;
-  agreedSalePrice: number;
-}
 
 type Dialog = "edit" | "block" | "unblock" | null;
 
@@ -33,7 +26,7 @@ export default function CustomerDetailPage({ user }: Props) {
   const allowed = can(user?.role, "customers");
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
-  const [bookings, setBookings] = useState<BookingSummary[]>([]);
+  const [bookings, setBookings] = useState<CustomerBooking[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("overview");
@@ -73,7 +66,7 @@ export default function CustomerDetailPage({ user }: Props) {
       ]);
       if (!customerResponse.ok) throw new Error("Customer not found");
       setCustomer(await customerResponse.json());
-      if (bookingsResponse.ok) setBookings(((await bookingsResponse.json()) as { items?: BookingSummary[] }).items ?? []);
+      if (bookingsResponse.ok) setBookings(((await bookingsResponse.json()) as { items?: CustomerBooking[] }).items ?? []);
       await loadDocuments();
     } catch {
       setError("Unable to load customer.");
@@ -151,23 +144,7 @@ export default function CustomerDetailPage({ user }: Props) {
 
       {activeTab === "overview" && <CustomerOverview customer={customer} />}
 
-      {activeTab === "bookings" && (
-        bookings.length === 0 ? (
-          <p className="m-0 text-sm text-ink-muted">No confirmed bookings yet.</p>
-        ) : (
-          <ul className="m-0 flex list-none flex-col gap-3 p-0">
-            {bookings.map((booking) => (
-              <li key={booking.id} className="flex items-center justify-between rounded-card border border-line bg-card px-4 py-3">
-                <div>
-                  <p className="m-0 font-extrabold text-ink">{booking.bookingReference}</p>
-                  <p className="m-0 text-small text-ink-muted">{booking.projectName} · Unit {booking.unitNumber}</p>
-                </div>
-                <Link to={`/confirmed-bookings/${booking.id}`} className="text-sm font-bold text-gold-text underline-offset-4 hover:underline">Open</Link>
-              </li>
-            ))}
-          </ul>
-        )
-      )}
+      {activeTab === "bookings" && <CustomerBookings bookings={bookings} />}
 
       {activeTab === "documents" && (
         <CustomerDocumentsPanel customerId={customerId} checklist={documents} loading={documentsLoading} error={documentsError} onRefresh={loadDocuments} />

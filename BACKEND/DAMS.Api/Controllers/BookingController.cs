@@ -95,9 +95,8 @@ namespace DAMS.Api.Controllers
         [HttpGet("customer/{customerId:int}")]
         public async Task<IActionResult> GetByCustomer(int customerId)
         {
-            var filter = new BookingFilterDto { CustomerId = customerId, PageSize = 100 };
-            var result = await _bookingService.GetBookingsAsync(filter);
-            return Ok(result);
+            var items = await _bookingService.GetCustomerBookingsAsync(customerId);
+            return Ok(new { items });
         }
 
         [HttpPost("{id:int}/cancel")]

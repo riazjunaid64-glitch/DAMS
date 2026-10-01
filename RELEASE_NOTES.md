@@ -1,5 +1,11 @@
 # Unreleased
 
+## Customer page: Bookings tab (KAN-81)
+
+The Bookings tab on the customer page shows one card per booking, newest first: the booking number and status badge (the Bookings list names and colours), "Unit B08 · Floria Heights", the booked date, and three figures — **Net price**, **Paid** (green, the booking page's Collected) and **Still due** (its Outstanding, "—" once the booking is cancelled). The whole card opens the booking, and desktop also has a Details button. With no bookings the tab shows "No bookings yet" and the tab count is hidden.
+
+`GET /api/Booking/customer/{id}` now answers `{ items }` of slim rows (`id`, `bookingReference`, `status`, `unitNumber`, `projectName`, `bookingDate`, `netPrice`, `collected`, `outstanding`) built with the same figure function as the booking page, so the numbers cannot differ. It no longer stops at 100 bookings: every booking of the customer is returned, and the count on the customer detail is the length of this list. No migration.
+
 ## Customer page, Edit, Block and Unblock (KAN-80)
 
 The customer page has one header (name, a badge reading "N documents needed", "Documents complete" or red "Blocked", the phone, CNIC and "Customer since"), three tabs (Overview, Bookings with its count, Documents) and an Overview of Personal details, Contact and Notes cards; anything never filled in reads "Not added" and a blank WhatsApp reads "Same as mobile". The History tab is gone. **Edit** is now the shared Customer form (with Notes; no Status or Source) and saves date of birth, nationality, occupation and WhatsApp, which could never be changed before. **Block** asks for a required reason, stops new bookings, and shows a red "New bookings are stopped" notice with the reason, the person and the day; **Unblock** asks first and reverses it. **New booking** opens New booking with this customer chosen, and is not offered for a blocked customer (the server still refuses them). On a phone the header has New booking and ⋯ (Edit details, Block customer); a blocked customer has Unblock and the Edit pencil.

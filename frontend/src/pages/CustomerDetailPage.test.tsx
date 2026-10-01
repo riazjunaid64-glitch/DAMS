@@ -27,6 +27,10 @@ const base = {
   createdAt: "2026-04-20T07:00:00", documentsNeeded: 2,
 };
 const blocked = { ...base, status: "Blocked", blockedReason: "Cheque bounced twice", blockedByName: "admin", blockedAt: "2026-09-30T10:00:00" };
+const bookingRows = [
+  { id: 9, bookingReference: "BK-000013", status: "PaymentPlanActive", unitNumber: "B08", projectName: "Floria Heights", bookingDate: "2026-04-20T07:00:00", netPrice: 12_800_000, collected: 4_172_000, outstanding: 8_628_000 },
+  { id: 10, bookingReference: "BK-000029", status: "Cancelled", unitNumber: "G27", projectName: "Floria Heights", bookingDate: "2026-07-07T07:00:00", netPrice: 15_200_000, collected: 2_270_000, outstanding: 0 },
+];
 const admin = { userId: 1, role: "Admin", email: "a@b.c", fullName: "A" } as never;
 const sales = { userId: 2, role: "Sales employee", email: "s@b.c", fullName: "S" } as never;
 
@@ -60,7 +64,7 @@ const requested = (method: string, url: string) => calls.filter((c) => c.method 
 
 beforeEach(() => {
   calls = [];
-  answers = { "GET /api/Booking/customer/5": () => ({ body: { items: [{ id: 9, bookingReference: "BK-000009", projectName: "Floria", unitNumber: "B08" }, { id: 10, bookingReference: "BK-000010", projectName: "Floria", unitNumber: "B09" }] } }) };
+  answers = { "GET /api/Booking/customer/5": () => ({ body: { items: bookingRows } }) };
   phone(false);
 });
 afterEach(cleanup);
@@ -105,6 +109,54 @@ describe("the header and tabs", () => {
     show(base, sales);
     expect(await screen.findByText("You don't have access to Customers.")).toBeTruthy();
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("the Bookings tab", () => {
+  const openTab = async () => {
+    show();
+    fireEvent.click(await screen.findByRole("tab", { name: /Bookings/ }));
+  };
+
+  it("shows a card per booking with number, status, unit, project, booked date and the three figures", async () => {
+    await openTab();
+    const first = (await screen.findByText("BK-000013")).closest("article")!;
+    expect(within(first).getByText("Payment plan")).toBeTruthy();
+    expect(within(first).getByText("Unit B08")).toBeTruthy();
+    expect(within(first).getByText("· Floria Heights")).toBeTruthy();
+    expect(within(first).getByText("Booked Apr 20, 2026")).toBeTruthy();
+    expect(within(first).getByText("Rs 12,800,000")).toBeTruthy();
+    expect(within(first).getByText("Rs 4,172,000").className).toContain("text-success");
+    expect(within(first).getByText("Rs 8,628,000")).toBeTruthy();
+  });
+
+  it("keeps the server's order, newest first, as given", async () => {
+    await openTab();
+    await screen.findByText("BK-000013");
+    expect(screen.getAllByRole("article").map((card) => card.textContent?.slice(0, 9))).toEqual(["BK-000013", "BK-000029"]);
+  });
+
+  it("shows a dash for Still due on a cancelled booking", async () => {
+    await openTab();
+    const cancelled = (await screen.findByText("BK-000029")).closest("article")!;
+    expect(within(cancelled).getByText("—")).toBeTruthy();
+    expect(within(cancelled).queryByText("Rs 0")).toBeNull();
+    expect(within(cancelled).getByText("Rs 2,270,000")).toBeTruthy();
+  });
+
+  it("the card and its Details button both open the booking", async () => {
+    await openTab();
+    const first = (await screen.findByText("BK-000013")).closest("article")!;
+    expect(within(first).getByRole("link", { name: "BK-000013" }).getAttribute("href")).toBe("/confirmed-bookings/9");
+    fireEvent.click(within(first).getByRole("button", { name: "Details of BK-000013" }));
+    expect(screen.getByTestId("where").textContent).toBe("/confirmed-bookings/9");
+  });
+
+  it("says No bookings yet, and hides the tab count, when there are none", async () => {
+    answers["GET /api/Booking/customer/5"] = () => ({ body: { items: [] } });
+    show({ ...base, bookingsCount: 0 });
+    fireEvent.click(await screen.findByRole("tab", { name: "Bookings" }));
+    expect(await screen.findByText("No bookings yet")).toBeTruthy();
   });
 });
 
