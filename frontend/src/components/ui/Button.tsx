@@ -1,4 +1,12 @@
-import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
+import type {
+  AnchorHTMLAttributes,
+  ButtonHTMLAttributes,
+  FocusEventHandler,
+  KeyboardEventHandler,
+  MouseEventHandler,
+  ReactNode,
+  Ref,
+} from "react";
 import { Link } from "react-router-dom";
 import { cx } from "./cx.ts";
 
@@ -15,7 +23,10 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   /** A 44×44 square holding only `icon`; give it an aria-label. */
   iconOnly?: boolean;
   fullWidth?: boolean;
-  /** Shows a spinner and blocks clicks until the work finishes. */
+  /**
+   * Shows a spinner and blocks the click. On a link, `disabled` and `loading`
+   * also block navigation.
+   */
   loading?: boolean;
   /** Renders a link with the same look, for the website pages. */
   to?: string;
@@ -23,6 +34,8 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   href?: string;
   target?: string;
   rel?: string;
+} & {
+  [key: `data-${string}`]: string | number | boolean | undefined;
 };
 
 const variantClass: Record<ButtonVariant, string> = {
@@ -44,17 +57,32 @@ const sizeClass: Record<ButtonSize, string> = {
   lg: "h-12 gap-2 rounded-btn-phone px-5 text-[15px]",
 };
 
-/* Filled buttons turn grey; boxed outline ones keep their white box and fade their text. */
+/* Filled buttons turn grey; boxed outline ones keep their white box and fade their text.
+   `disabled:` covers a real button. `aria-disabled:` covers a link, which cannot use the attribute. */
 const disabledClass: Record<ButtonVariant, string> = {
-  primary: "disabled:bg-disabled disabled:text-ink-faint",
-  success: "disabled:bg-disabled disabled:text-ink-faint",
-  outline: "disabled:bg-card disabled:border-line disabled:text-ink-faint",
-  danger: "disabled:bg-card disabled:border-line disabled:text-ink-faint",
-  ghost: "disabled:bg-transparent disabled:text-ink-faint",
-  link: "disabled:text-ink-faint disabled:no-underline",
-  gold: "disabled:bg-disabled disabled:text-ink-faint",
-  light: "disabled:border-white/40 disabled:bg-transparent disabled:text-white/40",
+  primary: "disabled:bg-disabled disabled:text-ink-faint aria-disabled:bg-disabled aria-disabled:text-ink-faint aria-disabled:hover:bg-disabled",
+  success: "disabled:bg-disabled disabled:text-ink-faint aria-disabled:bg-disabled aria-disabled:text-ink-faint aria-disabled:hover:bg-disabled",
+  outline: "disabled:bg-card disabled:border-line disabled:text-ink-faint aria-disabled:bg-card aria-disabled:border-line aria-disabled:text-ink-faint aria-disabled:hover:bg-card",
+  danger: "disabled:bg-card disabled:border-line disabled:text-ink-faint aria-disabled:bg-card aria-disabled:border-line aria-disabled:text-ink-faint aria-disabled:hover:bg-card",
+  ghost: "disabled:bg-transparent disabled:text-ink-faint aria-disabled:bg-transparent aria-disabled:text-ink-faint aria-disabled:hover:bg-transparent",
+  link: "disabled:text-ink-faint disabled:no-underline aria-disabled:text-ink-faint aria-disabled:no-underline aria-disabled:hover:no-underline",
+  gold: "disabled:bg-disabled disabled:text-ink-faint aria-disabled:bg-disabled aria-disabled:text-ink-faint aria-disabled:hover:bg-disabled",
+  light: "disabled:border-white/40 disabled:bg-transparent disabled:text-white/40 aria-disabled:border-white/40 aria-disabled:bg-transparent aria-disabled:text-white/40 aria-disabled:hover:bg-transparent",
 };
+
+/* These belong on a <button> and are not forwarded to a link. */
+const BUTTON_ONLY = ["form", "formAction", "formEncType", "formMethod", "formNoValidate", "formTarget", "value"] as const;
+
+function linkDomProps(rest: object): Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
+  const next: Record<string, unknown> = { ...rest };
+  for (const key of BUTTON_ONLY) delete next[key];
+  return next as Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
+}
+
+function blockEvent(event: { preventDefault(): void; stopPropagation(): void }) {
+  event.preventDefault();
+  event.stopPropagation();
+}
 
 export function Button({
   ref,
@@ -72,8 +100,15 @@ export function Button({
   rel,
   className,
   children,
+  onClick,
+  onAuxClick,
+  onMouseDown,
+  onKeyDown,
+  onFocus,
+  tabIndex,
   ...rest
 }: ButtonProps) {
+  const inactive = Boolean(disabled || loading);
   const classes = cx(
     "inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-field font-ui font-bold transition-colors",
     "focus-visible:outline-2 focus-visible:outline-offset-2",
@@ -81,7 +116,7 @@ export function Button({
     variantClass[variant],
     iconOnly ? "size-11 p-0" : variant !== "link" && sizeClass[size],
     variant === "link" && "min-h-11 gap-1.5 text-sm md:min-h-0",
-    "disabled:cursor-not-allowed",
+    "disabled:cursor-not-allowed aria-disabled:cursor-not-allowed",
     disabledClass[variant],
     fullWidth && "w-full",
     (to || href) && "no-underline",
@@ -93,20 +128,94 @@ export function Button({
       {!iconOnly && children}
     </>
   );
-  if (to) {
-    return <Link to={to} className={classes}>{content}</Link>;
-  }
-  if (href) {
-    return <a href={href} target={target} rel={rel} className={classes}>{content}</a>;
+  if (to || href) {
+    const anchorDom = linkDomProps(rest);
+    const anchorRef = ref as Ref<HTMLAnchorElement>;
+    const anchorClick = onClick as MouseEventHandler<HTMLAnchorElement> | undefined;
+    const anchorAuxClick = onAuxClick as MouseEventHandler<HTMLAnchorElement> | undefined;
+    const anchorMouseDown = onMouseDown as MouseEventHandler<HTMLAnchorElement> | undefined;
+    const anchorKeyDown = onKeyDown as KeyboardEventHandler<HTMLAnchorElement> | undefined;
+    const anchorFocus = onFocus as FocusEventHandler<HTMLAnchorElement> | undefined;
+    /* A link cannot be `disabled`. Drop the address so it cannot be opened, mark it, and keep it out of the tab order. */
+    if (inactive) {
+      return (
+        <a
+          {...anchorDom}
+          ref={anchorRef}
+          role="link"
+          aria-disabled="true"
+          aria-busy={loading || undefined}
+          tabIndex={-1}
+          className={classes}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
+          onClick={blockEvent}
+          onAuxClick={blockEvent}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") blockEvent(event);
+          }}
+          onFocus={(event) => {
+            event.currentTarget.blur();
+          }}
+        >
+          {content}
+        </a>
+      );
+    }
+    if (to) {
+      return (
+        <Link
+          {...anchorDom}
+          ref={anchorRef}
+          to={to}
+          target={target}
+          rel={rel}
+          tabIndex={tabIndex}
+          className={classes}
+          onClick={anchorClick}
+          onAuxClick={anchorAuxClick}
+          onMouseDown={anchorMouseDown}
+          onKeyDown={anchorKeyDown}
+          onFocus={anchorFocus}
+        >
+          {content}
+        </Link>
+      );
+    }
+    return (
+      <a
+        {...anchorDom}
+        ref={anchorRef}
+        href={href}
+        target={target}
+        rel={rel}
+        tabIndex={tabIndex}
+        className={classes}
+        onClick={anchorClick}
+        onAuxClick={anchorAuxClick}
+        onMouseDown={anchorMouseDown}
+        onKeyDown={anchorKeyDown}
+        onFocus={anchorFocus}
+      >
+        {content}
+      </a>
+    );
   }
   return (
     <button
+      {...rest}
       ref={ref}
       type={type}
-      disabled={disabled || loading}
+      disabled={inactive}
       aria-busy={loading || undefined}
+      tabIndex={tabIndex}
       className={classes}
-      {...rest}
+      onClick={onClick}
+      onAuxClick={onAuxClick}
+      onMouseDown={onMouseDown}
+      onKeyDown={onKeyDown}
+      onFocus={onFocus}
     >
       {content}
     </button>
