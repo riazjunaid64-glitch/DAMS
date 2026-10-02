@@ -68,12 +68,35 @@ namespace DAMS.Api.Controllers
             RunAsync(() => _documents.GetVersionsAsync(customerId, requirementId, beforeVersionNumber, take,
                 cancellationToken));
 
-        [HttpPost("customers/{customerId:int}/requirements")]
-        public Task<IActionResult> AddRequirement(
+        [HttpPost("customers/{customerId:int}/documents")]
+        [RequestSizeLimit(CustomerDocumentService.MaxRequestSize)]
+        public async Task<IActionResult> AddDocument(
             int customerId,
-            [FromBody] AddCustomerDocumentRequirementDto dto,
-            CancellationToken cancellationToken) =>
-            RunAsync(() => _documents.AddRequirementAsync(customerId, dto, Actor(), cancellationToken));
+            [FromForm] IFormFile? file,
+            [FromForm] int? categoryId,
+            [FromForm] string? name,
+            CancellationToken cancellationToken)
+        {
+            if (file == null)
+                return BadRequest(new { message = "Choose a document to upload." });
+
+            try
+            {
+                await using var stream = file.OpenReadStream();
+                var result = await _documents.AddDocumentAsync(customerId, categoryId, name,
+                    new CustomerDocumentUpload
+                    {
+                        Content = stream,
+                        FileName = file.FileName,
+                        Length = file.Length
+                    }, Actor(), cancellationToken);
+                return Ok(result);
+            }
+            catch (Exception ex) when (IsExpected(ex))
+            {
+                return Expected(ex);
+            }
+        }
 
         [HttpPost("customers/{customerId:int}/requirements/{requirementId:int}/upload")]
         [RequestSizeLimit(CustomerDocumentService.MaxRequestSize)]
@@ -105,45 +128,59 @@ namespace DAMS.Api.Controllers
             }
         }
 
-        [HttpPost("customers/{customerId:int}/requirements/{requirementId:int}/status")]
-        public Task<IActionResult> ChangeStatus(
+        [HttpPost("customers/{customerId:int}/requirements/{requirementId:int}/not-needed")]
+        public Task<IActionResult> MarkNotNeeded(
             int customerId,
             int requirementId,
-            [FromBody] CustomerDocumentStatusChangeDto dto,
+            [FromBody] NotNeededDocumentDto dto,
             CancellationToken cancellationToken) =>
-            RunAsync(() => _documents.ChangeStatusAsync(customerId, requirementId, dto, Actor(), cancellationToken));
+            RunAsync(() => _documents.MarkNotNeededAsync(customerId, requirementId, dto, Actor(), cancellationToken));
 
-        [HttpPut("customers/{customerId:int}/requirements/{requirementId:int}/due-date")]
-        public Task<IActionResult> ChangeDueDate(
+        [HttpGet("customers/{customerId:int}/requirements/{requirementId:int}/versions/{versionId:int}/view")]
+        public async Task<IActionResult> View(
             int customerId,
             int requirementId,
-            [FromBody] CustomerDocumentDueDateDto dto,
-            CancellationToken cancellationToken) =>
-            RunAsync(() => _documents.ChangeDueDateAsync(customerId, requirementId, dto, Actor(), cancellationToken));
+            int versionId,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var result = await _documents.ViewAsync(customerId, requirementId, versionId, Actor(), cancellationToken);
+                AddPrivateFileHeaders();
+                return File(result.Content, result.ContentType, enableRangeProcessing: true);
+            }
+            catch (Exception ex) when (IsExpected(ex))
+            {
+                return Expected(ex);
+            }
+        }
 
         [HttpGet("customers/{customerId:int}/requirements/{requirementId:int}/versions/{versionId:int}/file")]
         public async Task<IActionResult> Download(
             int customerId,
             int requirementId,
             int versionId,
-            [FromQuery] bool download = false,
             CancellationToken cancellationToken = default)
         {
             try
             {
                 var result = await _documents.DownloadAsync(customerId, requirementId, versionId, Actor(), cancellationToken);
-                Response.Headers[HeaderNames.XContentTypeOptions] = "nosniff";
-                Response.Headers[HeaderNames.CacheControl] = "no-store, no-cache, must-revalidate";
-                // Always deliver as an attachment so a validated-but-hostile file can never render
-                // inline in an authenticated admin session on direct navigation. The SPA fetches the
-                // bytes as a blob and controls view-vs-save itself, so in-app preview is unaffected.
-                _ = download;
+                AddPrivateFileHeaders();
+                // Always an attachment, so a validated-but-hostile file can never render inline in an
+                // authenticated admin session on direct navigation.
                 return File(result.Content, result.ContentType, result.FileName, enableRangeProcessing: true);
             }
             catch (Exception ex) when (IsExpected(ex))
             {
                 return Expected(ex);
             }
+        }
+
+        private void AddPrivateFileHeaders()
+        {
+            Response.Headers[HeaderNames.XContentTypeOptions] = "nosniff";
+            Response.Headers[HeaderNames.CacheControl] = "no-store, no-cache, must-revalidate";
+            Response.Headers[HeaderNames.ContentSecurityPolicy] = "default-src 'none'; sandbox";
         }
 
         private async Task<IActionResult> RunAsync<T>(Func<Task<T>> action)
@@ -168,7 +205,7 @@ namespace DAMS.Api.Controllers
 
         private IActionResult Expected(Exception ex) => ex switch
         {
-            DbUpdateConcurrencyException => Conflict(new { message = ex.Message }),
+            DbUpdateConcurrencyException or CustomerDocumentConflictException => Conflict(new { message = ex.Message }),
             KeyNotFoundException or FileNotFoundException => NotFound(new { message = ex.Message }),
             UnauthorizedAccessException => Forbid(),
             _ => BadRequest(new { message = ex.Message })

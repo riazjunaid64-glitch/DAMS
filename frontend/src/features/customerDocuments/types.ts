@@ -1,22 +1,6 @@
-export type DocumentStatus =
-  | "Missing" | "Requested" | "Received" | "UnderReview" | "Approved"
-  | "Rejected" | "ReplacementRequired" | "Postponed" | "Waived"
-  | "NotApplicable" | "Expired";
+export type DocumentStatus = "Needed" | "Uploaded" | "NotNeeded";
 
 export type AssignmentMode = "None" | "NewCustomersOnly" | "AllActiveCustomers" | "SelectedCustomers";
-
-export interface DocumentSummary {
-  requiredTotal: number;
-  completedRequired: number;
-  missing: number;
-  awaitingReview: number;
-  replacementRequired: number;
-  postponed: number;
-  postponedDue: number;
-  isComplete: boolean;
-  completionPercent: number;
-  label: string;
-}
 
 export interface DocumentVersion {
   id: number;
@@ -27,59 +11,43 @@ export interface DocumentVersion {
   fileSize: number;
   uploadedByName?: string | null;
   uploadedAt: string;
-  reviewStatus: string;
-  reviewedByName?: string | null;
-  reviewedAt?: string | null;
-  reviewReason?: string | null;
 }
 
 export interface DocumentRequirement {
   id: number;
   categoryId?: number | null;
-  categoryCode?: string | null;
-  categoryIsActive: boolean;
   name: string;
   description?: string | null;
   isRequired: boolean;
   displayOrder: number;
-  allowedFileTypes: string[];
-  maxFileSizeBytes: number;
   status: DocumentStatus;
-  dueDate?: string | null;
-  postponedUntil?: string | null;
+  notNeededReason?: string | null;
+  notNeededByName?: string | null;
+  notNeededAt?: string | null;
   lastActionByName?: string | null;
   updatedAt: string;
   concurrencyToken: string;
   latestVersion?: DocumentVersion | null;
+  /** Newest first, the current file included. */
   versions: DocumentVersion[];
   hasMoreVersions: boolean;
 }
 
-export interface DocumentAudit {
-  id: number;
-  requirementId?: number | null;
-  versionId?: number | null;
-  documentName?: string | null;
-  action: string;
-  previousStatus?: DocumentStatus | null;
-  newStatus?: DocumentStatus | null;
-  notes?: string | null;
-  performedByName?: string | null;
-  occurredAt: string;
+export interface DocumentTypeOption {
+  categoryId: number;
+  name: string;
 }
 
 export interface DocumentChecklist {
   customerId: number;
   customerName: string;
-  summary: DocumentSummary;
+  /** Asked from this customer and no file yet — the number in the page header. */
+  stillNeeded: number;
+  /** Uploaded or not needed. */
+  done: number;
   requirements: DocumentRequirement[];
-  history: DocumentAudit[];
-  hasMoreHistory: boolean;
-}
-
-export interface DocumentAuditPage {
-  items: DocumentAudit[];
-  hasMore: boolean;
+  /** What the Add document popup offers, besides Other. */
+  availableTypes: DocumentTypeOption[];
 }
 
 export interface DocumentCategory {
@@ -89,11 +57,8 @@ export interface DocumentCategory {
   description?: string | null;
   isRequiredByDefault: boolean;
   displayOrder: number;
-  allowedFileTypes: string[];
-  maxFileSizeBytes: number;
   isActive: boolean;
   assignToNewCustomers: boolean;
-  defaultDueDays?: number | null;
   usageCount: number;
   createdAt: string;
   updatedAt?: string | null;

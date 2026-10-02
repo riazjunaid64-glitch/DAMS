@@ -1294,6 +1294,16 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<DateTime?>("BlockedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("BlockedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("BlockedReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
                     b.Property<string>("CNIC")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
@@ -1486,11 +1496,6 @@ namespace DAMS.Infrastructure.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<string>("AllowedFileTypes")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
                     b.Property<bool>("AssignToNewCustomers")
                         .HasColumnType("bit");
 
@@ -1509,9 +1514,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int?>("CreatedByUserId")
                         .HasColumnType("int");
 
-                    b.Property<int?>("DefaultDueDays")
-                        .HasColumnType("int");
-
                     b.Property<string>("Description")
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
@@ -1524,9 +1526,6 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Property<bool>("IsRequiredByDefault")
                         .HasColumnType("bit");
-
-                    b.Property<long>("MaxFileSizeBytes")
-                        .HasColumnType("bigint");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -1557,126 +1556,108 @@ namespace DAMS.Infrastructure.Migrations
                         new
                         {
                             Id = 1,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "cnic_front",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 10,
                             IsActive = true,
                             IsRequiredByDefault = true,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "CNIC Front",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 2,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "cnic_back",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 20,
                             IsActive = true,
                             IsRequiredByDefault = true,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "CNIC Back",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 3,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "customer_photo",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 30,
                             IsActive = true,
                             IsRequiredByDefault = true,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "Customer Photograph",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 4,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "proof_of_address",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 40,
                             IsActive = true,
                             IsRequiredByDefault = false,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "Proof of Address",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 5,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "passport",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 50,
                             IsActive = true,
                             IsRequiredByDefault = false,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "Passport",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 6,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "next_of_kin_cnic",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 60,
                             IsActive = true,
                             IsRequiredByDefault = false,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "Next-of-Kin CNIC",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 7,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "signature_specimen",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 70,
                             IsActive = true,
                             IsRequiredByDefault = false,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "Signature Specimen",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 8,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "tax_document",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 80,
                             IsActive = true,
                             IsRequiredByDefault = false,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "Tax Document",
                             RowVersion = new byte[0]
                         },
                         new
                         {
                             Id = 9,
-                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
                             AssignToNewCustomers = true,
                             Code = "other",
                             CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 90,
                             IsActive = true,
                             IsRequiredByDefault = false,
-                            MaxFileSizeBytes = 10485760L,
                             Name = "Other",
                             RowVersion = new byte[0]
                         });
@@ -1689,11 +1670,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("int");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AllowedFileTypes")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
 
                     b.Property<int?>("CategoryId")
                         .HasColumnType("int");
@@ -1711,9 +1687,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("DisplayOrder")
                         .HasColumnType("int");
 
-                    b.Property<DateTime?>("DueDate")
-                        .HasColumnType("datetime2");
-
                     b.Property<bool>("IsRequired")
                         .HasColumnType("bit");
 
@@ -1724,16 +1697,24 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int?>("LastActionByUserId")
                         .HasColumnType("int");
 
-                    b.Property<long>("MaxFileSizeBytes")
-                        .HasColumnType("bigint");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
 
-                    b.Property<DateTime?>("PostponedUntil")
+                    b.Property<DateTime?>("NotNeededAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("NotNeededByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("NotNeededByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("NotNeededReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
@@ -1791,23 +1772,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("nvarchar(255)");
 
                     b.Property<int>("RequirementId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("ReviewReason")
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
-
-                    b.Property<int>("ReviewStatus")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("ReviewedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("ReviewedByName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int?>("ReviewedByUserId")
                         .HasColumnType("int");
 
                     b.Property<byte[]>("RowVersion")
@@ -1942,6 +1906,37 @@ namespace DAMS.Infrastructure.Migrations
                         {
                             t.HasCheckConstraint("CK_CustomerRebates_Amounts", "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0");
                         });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerStatusLog", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Action")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("At")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId", "At");
+
+                    b.ToTable("CustomerStatusLogs");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmailSuppression", b =>
@@ -7960,6 +7955,17 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Booking");
+
+                    b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerStatusLog", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.Navigation("Customer");
                 });

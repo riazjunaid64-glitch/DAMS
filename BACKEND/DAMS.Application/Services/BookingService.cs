@@ -336,6 +336,37 @@ namespace DAMS.Application.Services
             };
         }
 
+        public async Task<List<CustomerBookingDto>> GetCustomerBookingsAsync(int customerId)
+        {
+            // Payments are loaded on purpose: Collected is their sum, and the projection below is the
+            // one the booking page uses, so Paid and Still due here cannot differ from there.
+            var entities = await _context.Bookings
+                .AsNoTracking()
+                .Include(b => b.Unit).ThenInclude(u => u.Project)
+                .Include(b => b.Payments)
+                .Where(b => b.CustomerId == customerId)
+                .OrderByDescending(b => b.BookingDate).ThenByDescending(b => b.Id)
+                .ToListAsync();
+
+            var (creditsByBooking, _) = await LoadCreditsAsync(entities.Select(b => b.Id).ToList(), includeInstallments: false);
+            var floorNames = await LoadFloorNamesAsync(entities);
+            return entities
+                .Select(b => MapProjection(b, floorNames, creditsByBooking.GetValueOrDefault(b.Id)))
+                .Select(r => new CustomerBookingDto
+                {
+                    Id = r.Id,
+                    BookingReference = r.BookingReference,
+                    Status = r.Status,
+                    UnitNumber = r.UnitNumber,
+                    ProjectName = r.ProjectName,
+                    BookingDate = r.BookingDate,
+                    NetPrice = r.AgreedSalePrice - r.DiscountAmount,
+                    Collected = r.Collected,
+                    Outstanding = r.Outstanding
+                })
+                .ToList();
+        }
+
         /// <summary>
         /// The filters the summary cards share with the list — search, project and customer, but
         /// not status, so choosing a status card never changes the other cards' numbers.

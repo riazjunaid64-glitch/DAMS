@@ -11,11 +11,8 @@ namespace DAMS.Application.DTOs.CustomerDocumentDtos
         public string? Description { get; set; }
         public bool IsRequiredByDefault { get; set; }
         public int DisplayOrder { get; set; }
-        public List<string> AllowedFileTypes { get; set; } = [];
-        public long MaxFileSizeBytes { get; set; }
         public bool IsActive { get; set; }
         public bool AssignToNewCustomers { get; set; }
-        public int? DefaultDueDays { get; set; }
         public int UsageCount { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
@@ -29,9 +26,6 @@ namespace DAMS.Application.DTOs.CustomerDocumentDtos
         [MaxLength(1000)] public string? Description { get; set; }
         public bool IsRequiredByDefault { get; set; }
         [Range(0, 100000)] public int DisplayOrder { get; set; } = 100;
-        [MinLength(1)] public List<string> AllowedFileTypes { get; set; } = [".pdf", ".jpg", ".jpeg", ".png"];
-        [Range(1, 25 * 1024 * 1024)] public long MaxFileSizeBytes { get; set; } = 10 * 1024 * 1024;
-        [Range(1, 3650)] public int? DefaultDueDays { get; set; }
         public CustomerDocumentAssignmentMode AssignmentMode { get; set; }
         public List<int> SelectedCustomerIds { get; set; } = [];
     }
@@ -43,9 +37,6 @@ namespace DAMS.Application.DTOs.CustomerDocumentDtos
         [MaxLength(1000)] public string? Description { get; set; }
         public bool IsRequiredByDefault { get; set; }
         [Range(0, 100000)] public int DisplayOrder { get; set; }
-        [MinLength(1)] public List<string> AllowedFileTypes { get; set; } = [];
-        [Range(1, 25 * 1024 * 1024)] public long MaxFileSizeBytes { get; set; }
-        [Range(1, 3650)] public int? DefaultDueDays { get; set; }
         public bool IsActive { get; set; }
         public bool AssignToNewCustomers { get; set; }
         [Required] public string ConcurrencyToken { get; set; } = string.Empty;
@@ -64,81 +55,48 @@ namespace DAMS.Application.DTOs.CustomerDocumentDtos
         public int AlreadyAssignedCustomers { get; set; }
     }
 
-    public class AddCustomerDocumentRequirementDto
+    public class NotNeededDocumentDto
     {
-        public int? CategoryId { get; set; }
-        [MaxLength(150)] public string? Name { get; set; }
-        [MaxLength(1000)] public string? Description { get; set; }
-        public bool IsRequired { get; set; } = true;
-        public DateTime? DueDate { get; set; }
-        public bool SaveAsGlobalCategory { get; set; }
-        [MaxLength(80)] public string? GlobalCategoryCode { get; set; }
-        public List<string> AllowedFileTypes { get; set; } = [".pdf", ".jpg", ".jpeg", ".png"];
-        [Range(1, 25 * 1024 * 1024)] public long MaxFileSizeBytes { get; set; } = 10 * 1024 * 1024;
-        public CustomerDocumentAssignmentMode GlobalAssignmentMode { get; set; }
-        public List<int> SelectedCustomerIds { get; set; } = [];
-    }
-
-    public class CustomerDocumentStatusChangeDto
-    {
-        public CustomerDocumentStatus Status { get; set; }
-        [MaxLength(2000)] public string? Reason { get; set; }
-        public DateTime? PostponedUntil { get; set; }
+        [Required, MaxLength(500)] public string Reason { get; set; } = string.Empty;
         [Required] public string ConcurrencyToken { get; set; } = string.Empty;
-    }
-
-    public class CustomerDocumentDueDateDto
-    {
-        public DateTime? DueDate { get; set; }
-        [MaxLength(2000)] public string? Reason { get; set; }
-        [Required] public string ConcurrencyToken { get; set; } = string.Empty;
-    }
-
-    public class CustomerDocumentSummaryDto
-    {
-        public int RequiredTotal { get; set; }
-        public int CompletedRequired { get; set; }
-        public int Missing { get; set; }
-        public int AwaitingReview { get; set; }
-        public int ReplacementRequired { get; set; }
-        public int Postponed { get; set; }
-        public int PostponedDue { get; set; }
-        public bool IsComplete { get; set; }
-        public int CompletionPercent { get; set; }
-        public string Label { get; set; } = string.Empty;
     }
 
     public class CustomerDocumentChecklistDto
     {
         public int CustomerId { get; set; }
         public string CustomerName { get; set; } = string.Empty;
-        public CustomerDocumentSummaryDto Summary { get; set; } = new();
+        /// <summary>Documents asked from this customer that still have no file (the same number as the page header).</summary>
+        public int StillNeeded { get; set; }
+        /// <summary>Documents that are uploaded or marked not needed.</summary>
+        public int Done { get; set; }
         public List<CustomerDocumentRequirementDto> Requirements { get; set; } = [];
-        /// <summary>The most recent audit entries only; page the full log via the history endpoint when <see cref="HasMoreHistory"/> is true.</summary>
-        public List<CustomerDocumentAuditDto> History { get; set; } = [];
-        public bool HasMoreHistory { get; set; }
+        /// <summary>Types the Add document popup offers: not asked from every customer and not already on this customer.</summary>
+        public List<CustomerDocumentTypeOptionDto> AvailableTypes { get; set; } = [];
+    }
+
+    public class CustomerDocumentTypeOptionDto
+    {
+        public int CategoryId { get; set; }
+        public string Name { get; set; } = string.Empty;
     }
 
     public class CustomerDocumentRequirementDto
     {
         public int Id { get; set; }
         public int? CategoryId { get; set; }
-        public string? CategoryCode { get; set; }
-        public bool CategoryIsActive { get; set; }
         public string Name { get; set; } = string.Empty;
         public string? Description { get; set; }
         public bool IsRequired { get; set; }
         public int DisplayOrder { get; set; }
-        public List<string> AllowedFileTypes { get; set; } = [];
-        public long MaxFileSizeBytes { get; set; }
         public CustomerDocumentStatus Status { get; set; }
-        public DateTime? DueDate { get; set; }
-        public DateTime? PostponedUntil { get; set; }
+        public string? NotNeededReason { get; set; }
+        public string? NotNeededByName { get; set; }
+        public DateTime? NotNeededAt { get; set; }
         public string? LastActionByName { get; set; }
         public DateTime UpdatedAt { get; set; }
         public string ConcurrencyToken { get; set; } = string.Empty;
         public CustomerDocumentVersionDto? LatestVersion { get; set; }
-        /// <summary>The most recent versions only (newest first); older versions exist when <see cref="HasMoreVersions"/> is true.</summary>
+        /// <summary>The most recent files only (newest first); older files exist when <see cref="HasMoreVersions"/> is true.</summary>
         public List<CustomerDocumentVersionDto> Versions { get; set; } = [];
         public bool HasMoreVersions { get; set; }
     }
@@ -153,10 +111,6 @@ namespace DAMS.Application.DTOs.CustomerDocumentDtos
         public long FileSize { get; set; }
         public string? UploadedByName { get; set; }
         public DateTime UploadedAt { get; set; }
-        public CustomerDocumentVersionStatus ReviewStatus { get; set; }
-        public string? ReviewedByName { get; set; }
-        public DateTime? ReviewedAt { get; set; }
-        public string? ReviewReason { get; set; }
     }
 
     public class CustomerDocumentAuditDto

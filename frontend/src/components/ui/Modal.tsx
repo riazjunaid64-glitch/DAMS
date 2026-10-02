@@ -46,14 +46,18 @@ export type ConfirmDialogProps = {
   onConfirm: () => void;
   title?: ReactNode;
   message: ReactNode;
+  /** Optional content under the message — a field the confirmation needs, such as a required reason. */
+  children?: ReactNode;
   confirmLabel?: ReactNode;
   /** Red confirm button for destructive actions. */
   danger?: boolean;
   loading?: boolean;
+  /** Greys the confirm button, e.g. while a required field in `children` is empty. */
+  confirmDisabled?: boolean;
 };
 
-/** Small "Are you sure?" popup. */
-export function ConfirmDialog({ open, onClose, onConfirm, title = "Are you sure?", message, confirmLabel = "Confirm", danger = false, loading = false }: ConfirmDialogProps) {
+/** Small "Are you sure?" popup, optionally holding a field under the message. */
+export function ConfirmDialog({ open, onClose, onConfirm, title = "Are you sure?", message, children, confirmLabel = "Confirm", danger = false, loading = false, confirmDisabled = false }: ConfirmDialogProps) {
   return (
     <Modal
       open={open}
@@ -61,9 +65,10 @@ export function ConfirmDialog({ open, onClose, onConfirm, title = "Are you sure?
       title={title}
       size="sm"
       busy={loading}
-      primaryAction={{ label: confirmLabel, onClick: onConfirm, variant: danger ? "danger" : "primary", loading }}
+      primaryAction={{ label: confirmLabel, onClick: onConfirm, variant: danger ? "danger" : "primary", loading, disabled: confirmDisabled }}
     >
       <p className="m-0">{message}</p>
+      {children && <div className="mt-3">{children}</div>}
     </Modal>
   );
 }

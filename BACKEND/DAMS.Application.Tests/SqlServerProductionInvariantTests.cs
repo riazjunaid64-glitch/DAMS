@@ -4,6 +4,7 @@ using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.BookingRequestDtos;
 using DAMS.Application.DTOs.CommissionRebateDtos;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
+using DAMS.Application.DTOs.CustomerDtos;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.InstallmentDtos;
@@ -132,7 +133,6 @@ public sealed class SqlServerProductionInvariantTests
                 new CreateCustomerDocumentCategoryDto
                 {
                     Name = "Atomic category", Code = "atomic_sql", IsRequiredByDefault = true,
-                    AllowedFileTypes = [".pdf"], MaxFileSizeBytes = 1024 * 1024,
                     AssignmentMode = CustomerDocumentAssignmentMode.AllActiveCustomers
                 }, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
         }
@@ -5653,7 +5653,6 @@ public sealed class SqlServerProductionInvariantTests
             var category = await documents.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
             {
                 Name = "Retry probe proof", Code = "retry_probe_proof", IsRequiredByDefault = true,
-                AllowedFileTypes = [".pdf"], MaxFileSizeBytes = 1024 * 1024,
                 AssignmentMode = CustomerDocumentAssignmentMode.SelectedCustomers,
                 SelectedCustomerIds = [customer.Id]
             }, actor);
@@ -5668,7 +5667,7 @@ public sealed class SqlServerProductionInvariantTests
                 {
                     Content = new MemoryStream(ProbePdf), FileName = "probe.pdf", Length = ProbePdf.LongLength
                 }, actor);
-            Assert.Equal(CustomerDocumentStatus.UnderReview, uploaded.Status);
+            Assert.Equal(CustomerDocumentStatus.Uploaded, uploaded.Status);
             Assert.Single(await db.CustomerDocumentVersions.AsNoTracking()
                 .Where(v => v.RequirementId == requirement.Id && v.IsCurrent).ToListAsync());
         }
@@ -6858,11 +6857,15 @@ public sealed class SqlServerProductionInvariantTests
     private static Task AddLaterCustomerColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
         IF COL_LENGTH(N'[Customers]', N'NormalizedPhone') IS NULL
             ALTER TABLE [Customers] ADD [NormalizedPhone] nvarchar(50) NULL;
+        IF COL_LENGTH(N'[Customers]', N'BlockedReason') IS NULL
+            ALTER TABLE [Customers] ADD [BlockedReason] nvarchar(500) NULL, [BlockedAt] datetime2 NULL, [BlockedByUserId] int NULL;
         """);
 
     private static Task DropLaterCustomerColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
         IF COL_LENGTH(N'[Customers]', N'NormalizedPhone') IS NOT NULL
             ALTER TABLE [Customers] DROP COLUMN [NormalizedPhone];
+        IF COL_LENGTH(N'[Customers]', N'BlockedReason') IS NOT NULL
+            ALTER TABLE [Customers] DROP COLUMN [BlockedReason], [BlockedAt], [BlockedByUserId];
         """);
 
     private static Task DropLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
@@ -7544,6 +7547,144 @@ public sealed class SqlServerProductionInvariantTests
     private static decimal PayableLine(DTOs.FinanceDtos.BalanceSheetDto sheet) =>
         sheet.LiabilityGroups.SelectMany(g => g.Lines)
             .Where(l => l.Name == "Commission Payable").Sum(l => l.Amount);
+
+    [SqlServerFact]
+    public async Task InactiveCustomers_BecomeActive_AndBlockedOnesStayBlocked()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20260930141646_AddInstallmentPlanAttempts");
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                VALUES (N'Active', N'03001110001', 0, 0, '2020-01-01'),
+                       (N'Inactive', N'03001110002', 0, 1, '2020-01-01'),
+                       (N'Blocked', N'03001110003', 0, 2, '2020-01-01');
+                """);
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var rows = await db.Customers.AsNoTracking().ToDictionaryAsync(c => c.FullName, c => c.Status);
+            Assert.Equal(CustomerStatus.Active, rows["Active"]);
+            Assert.Equal(CustomerStatus.Active, rows["Inactive"]);
+            Assert.Equal(CustomerStatus.Blocked, rows["Blocked"]);
+        }
+    }
+
+    [SqlServerFact]
+    public async Task CustomerDocumentStatuses_AreRemapped_AndNotNeededKeepsItsReason()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20261001000901_CustomerBlockReasonAndStatusLog");
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                VALUES (N'Docs Customer', N'03001110001', 0, 0, '2020-01-01');
+                DECLARE @c int = SCOPE_IDENTITY();
+                -- Id order: Missing, Received, Approved, Rejected, Postponed, Waived, NotApplicable, Expired
+                INSERT INTO [CustomerDocumentRequirements]
+                    ([CustomerId], [Name], [IsRequired], [DisplayOrder], [AllowedFileTypes], [MaxFileSizeBytes], [Status], [PostponedUntil], [CreatedAt], [UpdatedAt])
+                VALUES
+                    (@c, N'Missing', 1, 1, N'.pdf', 1024, 0, NULL, '2020-01-01', '2020-01-01'),
+                    (@c, N'Received', 1, 2, N'.pdf', 1024, 2, NULL, '2020-01-01', '2020-01-01'),
+                    (@c, N'Approved', 1, 3, N'.pdf', 1024, 4, NULL, '2020-01-01', '2020-01-01'),
+                    (@c, N'Rejected', 1, 4, N'.pdf', 1024, 5, NULL, '2020-01-01', '2020-01-01'),
+                    (@c, N'Postponed', 1, 5, N'.pdf', 1024, 7, '2030-01-01', '2020-01-01', '2020-01-01'),
+                    (@c, N'Waived', 1, 6, N'.pdf', 1024, 8, '2030-01-01', '2020-01-01', '2020-02-01'),
+                    (@c, N'NotApplicable', 1, 7, N'.pdf', 1024, 9, NULL, '2020-01-01', '2020-03-01'),
+                    (@c, N'Expired', 1, 8, N'.pdf', 1024, 10, NULL, '2020-01-01', '2020-01-01');
+                DECLARE @waived int = (SELECT [Id] FROM [CustomerDocumentRequirements] WHERE [Name] = N'Waived');
+                DECLARE @na int = (SELECT [Id] FROM [CustomerDocumentRequirements] WHERE [Name] = N'NotApplicable');
+                DECLARE @approved int = (SELECT [Id] FROM [CustomerDocumentRequirements] WHERE [Name] = N'Approved');
+                INSERT INTO [CustomerDocumentAuditEntries]
+                    ([CustomerId], [RequirementId], [Action], [PreviousStatus], [NewStatus], [Notes], [PerformedByUserId], [PerformedByName], [OccurredAt])
+                VALUES
+                    (@c, @waived, 9, 0, 8, N'Earlier note', 5, N'Old Admin', '2020-01-15'),
+                    (@c, @waived, 9, 0, 8, N'Approved exception', 7, N'Ayesha Admin', '2020-02-01'),
+                    (@c, @na, 10, 1, 9, N'Customer is not overseas', 7, N'Ayesha Admin', '2020-03-01'),
+                    (@c, @approved, 4, 3, 4, N'Looks fine', 7, N'Ayesha Admin', '2020-01-20');
+                """);
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var rows = await db.CustomerDocumentRequirements.AsNoTracking().ToDictionaryAsync(r => r.Name);
+            Assert.Equal(CustomerDocumentStatus.Needed, rows["Missing"].Status);
+            Assert.Equal(CustomerDocumentStatus.Uploaded, rows["Received"].Status);
+            Assert.Equal(CustomerDocumentStatus.Uploaded, rows["Approved"].Status);
+            Assert.Equal(CustomerDocumentStatus.Needed, rows["Rejected"].Status);
+            Assert.Equal(CustomerDocumentStatus.Needed, rows["Postponed"].Status);
+            Assert.Equal(CustomerDocumentStatus.Needed, rows["Expired"].Status);
+            Assert.Null(rows["Postponed"].NotNeededAt);
+            Assert.Null(rows["Missing"].NotNeededReason);
+
+            var waived = rows["Waived"];
+            Assert.Equal(CustomerDocumentStatus.NotNeeded, waived.Status);
+            Assert.Equal("Approved exception", waived.NotNeededReason);
+            Assert.Equal(7, waived.NotNeededByUserId);
+            Assert.Equal("Ayesha Admin", waived.NotNeededByName);
+            Assert.Equal(new DateTime(2020, 2, 1), waived.NotNeededAt);
+            var notApplicable = rows["NotApplicable"];
+            Assert.Equal(CustomerDocumentStatus.NotNeeded, notApplicable.Status);
+            Assert.Equal("Customer is not overseas", notApplicable.NotNeededReason);
+
+            // The audit rows keep their action and notes, and their status numbers move to the new meaning.
+            var audit = await db.CustomerDocumentAuditEntries.AsNoTracking().ToListAsync();
+            var approvedAudit = audit.Single(a => a.Notes == "Looks fine");
+            Assert.Equal(CustomerDocumentStatus.Uploaded, approvedAudit.PreviousStatus);
+            Assert.Equal(CustomerDocumentStatus.Uploaded, approvedAudit.NewStatus);
+            var waivedAudit = audit.First(a => a.Notes == "Approved exception");
+            Assert.Equal(CustomerDocumentStatus.Needed, waivedAudit.PreviousStatus);
+            Assert.Equal(CustomerDocumentStatus.NotNeeded, waivedAudit.NewStatus);
+            Assert.Equal(CustomerDocumentAction.Waived, waivedAudit.Action);
+        }
+    }
+
+    [SqlServerFact]
+    public async Task CreateCustomer_WithTheSamePhoneInParallel_CreatesOneCustomer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        async Task<bool> Create(string name)
+        {
+            await using var db = new AppDbContext(options);
+            try
+            {
+                await new CustomerService(db).CreateCustomerAsync(
+                    new CreateCustomerDto { FullName = name, Phone = "0300-5550001" }, Actor.UserId, Actor.DisplayName);
+                return true;
+            }
+            catch (CustomerConflictException)
+            {
+                return false;
+            }
+        }
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(i => Create($"Racer {i}")));
+
+        Assert.Single(results, created => created);
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(1, await verify.Customers.CountAsync(c => c.NormalizedPhone == "3005550001"));
+    }
 
     [SqlServerFact]
     public async Task CustomerNormalizedPhoneBackfill_StoresTheNationalNumber()

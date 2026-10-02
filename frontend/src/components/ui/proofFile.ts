@@ -12,6 +12,29 @@ export const PROOF_TOO_LARGE = "That file is over 15 MB. Choose a smaller one.";
 export const PROOF_WRONG_TYPE = "This file type isn't allowed. Use PDF, image, Word or Excel.";
 export const PROOF_EMPTY = "That file is empty. Choose another one.";
 
+/** What a file field accepts: the types, the size limit and the words shown when a file is refused. */
+export type FileRule = {
+  extensions: readonly string[];
+  maxBytes: number;
+  /** What the file picker offers; on a phone this includes the camera and the gallery. */
+  accept: string;
+  /** The grey line in the drop zone. */
+  hint: string;
+  tooLarge: string;
+  wrongType: string;
+  empty: string;
+};
+
+export const PROOF_RULE: FileRule = {
+  extensions: PROOF_EXTENSIONS,
+  maxBytes: PROOF_MAX_BYTES,
+  accept: PROOF_ACCEPT,
+  hint: "PDF, image, Word or Excel · up to 15 MB",
+  tooLarge: PROOF_TOO_LARGE,
+  wrongType: PROOF_WRONG_TYPE,
+  empty: PROOF_EMPTY,
+};
+
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 
 function extensionOf(name: string): string {
@@ -19,13 +42,16 @@ function extensionOf(name: string): string {
   return dot < 0 ? "" : name.slice(dot).toLowerCase();
 }
 
-/** The message to show when the file cannot be attached, or null when it can. */
-export function proofFileError(file: { name: string; size: number }): string | null {
-  if (!(PROOF_EXTENSIONS as readonly string[]).includes(extensionOf(file.name))) return PROOF_WRONG_TYPE;
-  if (file.size === 0) return PROOF_EMPTY;
-  if (file.size > PROOF_MAX_BYTES) return PROOF_TOO_LARGE;
+/** The message to show when the file breaks the rule, or null when it can be used. */
+export function fileRuleError(file: { name: string; size: number }, rule: FileRule): string | null {
+  if (!rule.extensions.includes(extensionOf(file.name))) return rule.wrongType;
+  if (file.size === 0) return rule.empty;
+  if (file.size > rule.maxBytes) return rule.tooLarge;
   return null;
 }
+
+/** The message to show when the file cannot be attached, or null when it can. */
+export const proofFileError = (file: { name: string; size: number }): string | null => fileRuleError(file, PROOF_RULE);
 
 export function isImageName(name: string): boolean {
   return IMAGE_EXTENSIONS.includes(extensionOf(name));

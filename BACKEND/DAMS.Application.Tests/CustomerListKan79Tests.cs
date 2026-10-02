@@ -20,14 +20,12 @@ public sealed class CustomerListKan79Tests
         var complete = await service.CreateCustomerAsync(new CreateCustomerDto
         {
             FullName = "Complete Person",
-            Phone = "03001110001",
-            Source = CustomerSource.WalkIn
+            Phone = "03001110001"
         }, h.AdminUserId);
         var needing = await service.CreateCustomerAsync(new CreateCustomerDto
         {
             FullName = "Needs Docs",
-            Phone = "03001110002",
-            Source = CustomerSource.WalkIn
+            Phone = "03001110002"
         }, h.AdminUserId);
 
         // Create may attach "Ask every customer" defaults. Make one customer fully complete and the
@@ -37,8 +35,8 @@ public sealed class CustomerListKan79Tests
                      .ToListAsync())
         {
             requirement.Status = requirement.CustomerId == complete.Id
-                ? CustomerDocumentStatus.Approved
-                : CustomerDocumentStatus.Missing;
+                ? CustomerDocumentStatus.Uploaded
+                : CustomerDocumentStatus.Needed;
             requirement.IsRequired = true;
         }
         if (!await h.Db.CustomerDocumentRequirements.AnyAsync(r => r.CustomerId == needing.Id))
@@ -48,7 +46,7 @@ public sealed class CustomerListKan79Tests
                 CustomerId = needing.Id,
                 Name = "CNIC copy",
                 IsRequired = true,
-                Status = CustomerDocumentStatus.Missing,
+                Status = CustomerDocumentStatus.Needed,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             });
@@ -82,8 +80,7 @@ public sealed class CustomerListKan79Tests
         {
             FullName = "Phone Search",
             Phone = "03001110003",
-            CNIC = "37405-1234567-1",
-            Source = CustomerSource.WalkIn
+            CNIC = "37405-1234567-1"
         }, h.AdminUserId);
 
         var list = await service.GetCustomersAsync(new CustomerFilterDto { SearchTerm = search });
@@ -102,8 +99,7 @@ public sealed class CustomerListKan79Tests
         {
             FullName = "Cnic Search",
             Phone = "03001110004",
-            CNIC = "37405-1234567-1",
-            Source = CustomerSource.WalkIn
+            CNIC = "37405-1234567-1"
         }, h.AdminUserId);
 
         var list = await service.GetCustomersAsync(new CustomerFilterDto { SearchTerm = search });
@@ -118,16 +114,14 @@ public sealed class CustomerListKan79Tests
         var existing = await service.CreateCustomerAsync(new CreateCustomerDto
         {
             FullName = "Usman Tariq",
-            Phone = "03334412987",
-            Source = CustomerSource.WalkIn
+            Phone = "03334412987"
         }, h.AdminUserId);
 
         var error = await Assert.ThrowsAsync<CustomerConflictException>(() =>
             service.CreateCustomerAsync(new CreateCustomerDto
             {
                 FullName = "Someone Else",
-                Phone = "+92 333 4412987",
-                Source = CustomerSource.WalkIn
+                Phone = "+92 333 4412987"
             }, h.AdminUserId));
 
         Assert.Equal("phone", error.Field);
@@ -145,8 +139,7 @@ public sealed class CustomerListKan79Tests
         {
             FullName = "Usman Tariq",
             Phone = "03334412988",
-            CNIC = "37405-1234567-1",
-            Source = CustomerSource.WalkIn
+            CNIC = "37405-1234567-1"
         }, h.AdminUserId);
 
         var error = await Assert.ThrowsAsync<CustomerConflictException>(() =>
@@ -154,8 +147,7 @@ public sealed class CustomerListKan79Tests
             {
                 FullName = "Someone Else",
                 Phone = "03334412989",
-                CNIC = "3740512345671",
-                Source = CustomerSource.WalkIn
+                CNIC = "3740512345671"
             }, h.AdminUserId));
 
         Assert.Equal("cnic", error.Field);
@@ -179,8 +171,7 @@ public sealed class CustomerListKan79Tests
             Nationality = "Pakistani",
             Occupation = "Engineer",
             Address = "Islamabad",
-            Notes = "Prefers WhatsApp",
-            Source = CustomerSource.WalkIn
+            Notes = "Prefers WhatsApp"
         }, h.AdminUserId);
 
         var stored = await h.Db.Customers.AsNoTracking().SingleAsync(c => c.Id == created.Id);
@@ -201,10 +192,9 @@ public sealed class CustomerListKan79Tests
         var created = await service.CreateCustomerAsync(new CreateCustomerDto
         {
             FullName = "Blocked One",
-            Phone = "03001110005",
-            Source = CustomerSource.WalkIn
+            Phone = "03001110005"
         }, h.AdminUserId);
-        await service.UpdateCustomerAsync(created.Id, new UpdateCustomerDto { Status = CustomerStatus.Blocked });
+        await service.BlockCustomerAsync(created.Id, "Cheque bounced twice", h.AdminUserId);
 
         var list = await service.GetCustomersAsync(new CustomerFilterDto());
         var row = Assert.Single(list.Items);

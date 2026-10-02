@@ -2,26 +2,9 @@ namespace DAMS.Domain.Enums
 {
     public enum CustomerDocumentStatus
     {
-        Missing = 0,
-        Requested = 1,
-        Received = 2,
-        UnderReview = 3,
-        Approved = 4,
-        Rejected = 5,
-        ReplacementRequired = 6,
-        Postponed = 7,
-        Waived = 8,
-        NotApplicable = 9,
-        Expired = 10
-    }
-
-    public enum CustomerDocumentVersionStatus
-    {
-        UnderReview = 0,
-        Approved = 1,
-        Rejected = 2,
-        ReplacementRequired = 3,
-        Superseded = 4
+        Needed = 0,
+        Uploaded = 1,
+        NotNeeded = 2
     }
 
     public enum CustomerDocumentAction
@@ -45,7 +28,10 @@ namespace DAMS.Domain.Enums
         CategoryActivated = 16,
         CategoryDeleted = 17,
         BulkCategoryAssignment = 18,
-        FileDownloaded = 19
+        FileDownloaded = 19,
+        FileViewed = 20,
+        MarkedNotNeeded = 21,
+        DocumentAdded = 22
     }
 
     public enum CustomerDocumentAssignmentMode
