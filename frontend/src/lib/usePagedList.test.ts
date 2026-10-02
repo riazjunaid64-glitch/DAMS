@@ -141,6 +141,55 @@ describe("usePagedList", () => {
     await waitFor(() => expect(result.current.rows).toEqual([{ id: 1 }]));
   });
 
+  it("refetches every loaded phone page on reload", async () => {
+    phone(true);
+    const all = Array.from({ length: 40 }, (_, index) => ({ id: index + 1 }));
+    const fetchPage = vi.fn(({ skip, take }: { skip: number; take: number }) => {
+      const items = all.slice(skip, skip + take);
+      return Promise.resolve({ items, totalCount: all.length, hasMore: skip + items.length < all.length });
+    });
+    const { result } = renderHook(() => usePagedList({ queryKey: "all", fetchPage, pageSize: 20 }));
+    await waitFor(() => expect(result.current.rows).toEqual(all.slice(0, 20)));
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.rows).toEqual(all));
+
+    act(() => result.current.reload());
+    expect(result.current.rows).toEqual(all);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.rows).toEqual(all);
+    const last = fetchPage.mock.calls.at(-1)?.[0] as { skip: number; take: number };
+    expect(last.skip).toBe(0);
+    expect(last.take).toBe(40);
+  });
+
+  it("appends the retried page when a phone load more fails and Try again succeeds", async () => {
+    phone(true);
+    const page1 = Array.from({ length: 20 }, (_, index) => ({ id: index + 1 }));
+    const page2 = Array.from({ length: 20 }, (_, index) => ({ id: index + 21 }));
+    let fail = false;
+    const fetchPage = vi.fn(({ skip, take }: { skip: number; take: number }) => {
+      if (fail) return Promise.reject(new Error("The list could not be read."));
+      const items = (skip === 0 ? page1 : page2).slice(0, take);
+      return Promise.resolve({ items, totalCount: 40, hasMore: skip === 0 });
+    });
+    const { result } = renderHook(() => usePagedList({ queryKey: "all", fetchPage, pageSize: 20 }));
+    await waitFor(() => expect(result.current.rows).toEqual(page1));
+
+    fail = true;
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.error).toBe("The list could not be read."));
+    expect(result.current.rows).toEqual(page1);
+
+    fail = false;
+    act(() => result.current.reload());
+    expect(result.current.rows).toEqual(page1);
+    await waitFor(() => expect(result.current.rows).toEqual([...page1, ...page2]));
+    expect(result.current.error).toBeNull();
+    const last = fetchPage.mock.calls.at(-1)?.[0] as { skip: number; take: number };
+    expect(last.skip).toBe(20);
+    expect(last.take).toBe(20);
+  });
+
   it("shows the server's message when a load fails", async () => {
     const fetchPage = vi.fn(() => Promise.reject(new Error("The list could not be read.")));
     const { result } = renderHook(() => usePagedList({ queryKey: "all", fetchPage, pageSize: 20 }));
