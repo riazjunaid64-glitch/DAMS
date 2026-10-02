@@ -1,7 +1,14 @@
+import type { ReactNode } from "react";
 import { Button, Notice, StatCard } from "../../../components/ui";
 import { formatMoney } from "./format.ts";
 import { TAX_TO_FBR_PATH } from "./paths.ts";
 import type { FinanceView, FinancialSummary } from "./types.ts";
+
+/** A missing movement is not zero. Unassigned has no account to sum, so the server leaves it null. */
+function movementFigure(value: number | null | undefined): ReactNode {
+  if (value == null) return "—";
+  return <span className={value < 0 ? "text-danger" : undefined}>{formatMoney(value)}</span>;
+}
 
 export function FinanceCards({
   summary,
@@ -20,12 +27,11 @@ export function FinanceCards({
 }) {
   const state = loading ? "loading" : error || !summary ? "error" : "ready";
   const money = (value: number | null | undefined) => formatMoney(value ?? 0);
-  const movement = summary?.accountNetMovement ?? 0;
   const cards = accountSelected
     ? [
         { key: "revenue" as const, label: "Revenue on this account", value: money(summary?.totalRevenue), tone: "green" as const, note: undefined, clickable: true },
         { key: "totalExpenses" as const, label: "Costs on this account", value: money(summary?.totalExpenses), tone: "grey" as const, note: undefined, clickable: true },
-        { key: null, label: "Account net movement", value: <span className={movement < 0 ? "text-danger" : undefined}>{money(movement)}</span>, tone: "grey" as const, note: undefined, clickable: false },
+        { key: null, label: "Account net movement", value: movementFigure(summary?.accountNetMovement), tone: "grey" as const, note: undefined, clickable: false },
       ]
     : [
         { key: "revenue" as const, label: "Total revenue", value: money(summary?.totalRevenue), tone: "green" as const, note: undefined, clickable: true },
@@ -99,7 +105,7 @@ export function FinanceNotices({
           <StatCard label="Opening balance" value={formatMoney(summary.accountOpeningBalance ?? 0)} />
           <StatCard
             label={datesSet ? "Net movement (period)" : "Net movement"}
-            value={<span className={(summary.accountNetMovement ?? 0) < 0 ? "text-danger" : undefined}>{formatMoney(summary.accountNetMovement ?? 0)}</span>}
+            value={movementFigure(summary.accountNetMovement)}
           />
         </div>
       )}

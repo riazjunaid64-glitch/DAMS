@@ -41,6 +41,9 @@ export function ExpenseDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reasonRequired, setReasonRequired] = useState(false);
+  // The free-text category an old row was recorded with. Choosing a managed category replaces
+  // form.category with that category's name; this copy is what "Keep the original text" restores.
+  const [originalCategory, setOriginalCategory] = useState(() => (form.legacyCategory ? form.category : ""));
   const hasCategory = !!form.categoryId || (form.legacyCategory && form.category.trim() !== "");
   const canSave = !!form.financeAccountId && hasCategory && positiveAmount(form.amount) && !!form.date && !reasonRequired;
 
@@ -104,7 +107,7 @@ export function ExpenseDialog({
   };
 
   const categoryOptions = [
-    ...(form.legacyCategory ? [{ value: "", label: `Keep the original text — "${form.category}"` }] : [{ value: "", label: lookupsLoading ? "Loading categories…" : "Select a category" }]),
+    ...(form.legacyCategory ? [{ value: "", label: `Keep the original text — "${originalCategory}"` }] : [{ value: "", label: lookupsLoading ? "Loading categories…" : "Select a category" }]),
     ...categories
       .filter((item) => item.isActive || String(item.id) === form.categoryId)
       .map((item) => ({ value: String(item.id), label: categoryLabel(item) })),
@@ -149,7 +152,7 @@ export function ExpenseDialog({
             onChange({
               ...form,
               categoryId,
-              category: category?.name ?? (categoryId ? form.category : form.legacyCategory ? form.category : ""),
+              category: category?.name ?? (form.legacyCategory ? originalCategory : ""),
               wht: categoryId ? form.wht : emptyWht(),
             });
           }}
@@ -160,7 +163,10 @@ export function ExpenseDialog({
             label="Original category text"
             required
             value={form.category}
-            onChange={(event) => onChange({ ...form, category: event.target.value })}
+            onChange={(event) => {
+              setOriginalCategory(event.target.value);
+              onChange({ ...form, category: event.target.value });
+            }}
           />
         )}
         <Dropdown

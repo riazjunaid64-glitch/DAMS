@@ -61,7 +61,25 @@ function respond(url: string, init?: RequestInit): { status?: number; body: unkn
   if (url.includes("/accounts/options")) {
     return { body: [{ id: 3, name: "Meezan Bank", type: 1, accountHolderName: "Adeel Satti", isActive: true }] };
   }
-  if (url.includes("/dashboard")) return { body: { summary, trend: [], distribution: [] } };
+  if (url.includes("/dashboard")) {
+    const account = new URL(url, "http://local").searchParams.get("account");
+    const namedAccount = Boolean(account) && account !== "unassigned";
+    return {
+      body: {
+        summary: {
+          ...summary,
+          accountFilterApplied: Boolean(account),
+          // A named account has a cash movement. Unassigned is not an account, so the server
+          // leaves the figure null — the card must not turn that into Rs 0.
+          accountNetMovement: namedAccount ? 12500 : null,
+          accountCurrentBalance: namedAccount ? 20000 : null,
+          accountOpeningBalance: namedAccount ? 7500 : null,
+        },
+        trend: [],
+        distribution: [],
+      },
+    };
+  }
   if (url.includes("/rows")) return { body: { items: rows, hasMore: false, totalCount: rows.length } };
   if (init?.method === "DELETE") return { body: { message: "Deleted" } };
   return { body: {} };
@@ -111,6 +129,22 @@ describe("Finance home", () => {
     expect(screen.getByText("Account net movement")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Customer deposits/ })).toBeNull();
     expect(screen.queryByText("At period end")).toBeNull();
+  });
+
+  it("does not turn a missing Unassigned net movement into Rs 0", async () => {
+    show();
+    await screen.findByRole("button", { name: /Customer deposits/ });
+    fireEvent.click(screen.getByRole("combobox", { name: /Account/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Unassigned" }));
+    expect(await screen.findByRole("button", { name: /Revenue on this account/ })).toBeTruthy();
+    const unassigned = screen.getByText("Account net movement").closest("div");
+    expect(unassigned?.textContent).toContain("—");
+    expect(unassigned?.textContent).not.toContain("Rs 0");
+
+    fireEvent.click(screen.getByRole("combobox", { name: /Account/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Meezan Bank" }));
+    expect(await screen.findByRole("button", { name: /Revenue on this account/ })).toBeTruthy();
+    expect(screen.getByText("Account net movement").closest("div")?.textContent).toContain("Rs 12,500");
   });
 
   it("shows the empty state for the selected filters", async () => {
