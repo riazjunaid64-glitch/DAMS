@@ -59,19 +59,26 @@ export type PeriodOption = { value: PeriodPreset; label: string; disabled?: bool
 export function periodSelectOptions(
   rangeFor: (preset: Exclude<PeriodPreset, "custom">) => PeriodRange,
   status: FinancialYearStatus,
+  /** Offer only these presets (plus Custom). Omitted: every preset. */
+  presets?: readonly Exclude<PeriodPreset, "custom">[],
+  /** Replaces the word "Custom". */
+  customLabel = "Custom",
+  /** Year options also state their months ("This financial year (Jul 2026 – Jun 2027)"). */
+  withMonths = true,
 ): PeriodOption[] {
   const yearReady = status === "ready";
   const year = rangeFor("year");
   const lastYear = rangeFor("lastYear");
-  return [
+  const all: PeriodOption[] = [
     { value: "all", label: "All time" },
     { value: "today", label: "Today" },
     { value: "month", label: "This month" },
     { value: "lastMonth", label: "Last month" },
-    { value: "year", label: yearLabel("This financial year", year, yearReady), disabled: !yearReady || !year.from || !year.to },
-    { value: "lastYear", label: yearLabel("Last financial year", lastYear, yearReady), disabled: !yearReady || !lastYear.from || !lastYear.to },
-    { value: "custom", label: "Custom" },
+    { value: "year", label: yearLabel("This financial year", year, yearReady && withMonths), disabled: !yearReady || !year.from || !year.to },
+    { value: "lastYear", label: yearLabel("Last financial year", lastYear, yearReady && withMonths), disabled: !yearReady || !lastYear.from || !lastYear.to },
+    { value: "custom", label: customLabel },
   ];
+  return presets ? all.filter((option) => option.value === "custom" || presets.includes(option.value as Exclude<PeriodPreset, "custom">)) : all;
 }
 
 /**

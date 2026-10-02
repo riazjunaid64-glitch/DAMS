@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { BottomSheet } from "./BottomSheet.tsx";
 import { Button } from "./Button.tsx";
 import { cx } from "./cx.ts";
@@ -21,7 +21,16 @@ import type { Option } from "./types.ts";
 
 export type { FinancialYearStatus, PeriodPreset, PeriodRange };
 
-export type FilterDef =
+type FilterBase = {
+  /**
+   * Shows the filter only while this is true. It reads the live values on desktop and the sheet's
+   * unapplied choices on a phone, so a filter can follow another ("Show: Date range" brings From
+   * and To). A hidden filter is not counted and its range is not checked.
+   */
+  when?: (values: FilterValues) => boolean;
+};
+
+export type FilterDef = FilterBase & (
   | { type: "select"; key: string; label: string; options: readonly Option[]; icon?: ReactNode; allLabel?: string }
   | { type: "date"; key: string; label: string; max?: string; required?: boolean }
   | {
@@ -49,7 +58,16 @@ export type FilterDef =
       rangeFor: (preset: Exclude<PeriodPreset, "custom">) => PeriodRange;
       /** Year options stay disabled, with a hint, until this is "ready". */
       financialYear?: FinancialYearStatus;
-    };
+      /** Offer only these presets, plus Custom. Dates that match none of them read as Custom. */
+      presets?: readonly Exclude<PeriodPreset, "custom">[];
+      /** Replaces the word "Custom" ("Custom dates"). */
+      customLabel?: string;
+      /** Set to false to name the year options without their months, when the dates are on screen anyway. */
+      monthsInLabel?: boolean;
+      /** What both dates empty mean on this page (the server's own default), shown instead of "All time" / Custom. */
+      emptyPreset?: Exclude<PeriodPreset, "custom">;
+    }
+);
 
 export type FilterValues = Record<string, string>;
 
@@ -62,11 +80,20 @@ export type FilterBarProps = {
   onChange: (changes: FilterValues) => void;
   /** Clears search and filters. */
   onReset: () => void;
+  /**
+   * What a page opens on, for filters that start with a value (a financial year, today). The Reset
+   * link and the phone badge count a filter only when it differs from this. Omitted: "" everywhere.
+   */
+  defaults?: FilterValues;
+  /** The message under a From/To pair that cannot be applied, or null once it can. */
+  onRangeError?: (message: string | null) => void;
   /** Phone only: the navy "+" add button next to the filter button. */
   onAdd?: () => void;
   addLabel?: string;
   className?: string;
 };
+
+const visibleIn = (filters: readonly FilterDef[], values: FilterValues) => filters.filter((filter) => !filter.when || filter.when(values));
 
 const withAll = (filter: Extract<FilterDef, { type: "select" }>): Option[] => [
   { value: "", label: filter.allLabel ?? "All" },
@@ -86,7 +113,7 @@ const controlClass = "min-w-0 max-w-[240px] flex-1 basis-0";
  * A `dateRange` is one filter: both dates or neither, applied only once the pair is valid. A
  * `period` select can own that range.
  */
-export function FilterBar({ search, filters, values, onChange, onReset, onAdd, addLabel = "Add", className }: FilterBarProps) {
+export function FilterBar({ search, filters, values, onChange, onReset, defaults, onRangeError, onAdd, addLabel = "Add", className }: FilterBarProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [draft, setDraft] = useState<FilterValues>({});
   const [rangeDrafts, setRangeDrafts] = useState<Record<string, RangeDraft>>({});
@@ -116,7 +143,7 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
       return changed ? next : current;
     });
   }
-  const activeCount = activeFilterCount(filters, values);
+  const activeCount = activeFilterCount(filters, values, defaults);
   const active = activeCount > 0;
   const showReset = active || Boolean(search?.value);
 
@@ -126,8 +153,9 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
     return { from: source[fromKey] ?? "", to: source[toKey] ?? "" };
   };
 
+  const desktopFilters = visibleIn(filters, values);
   const desktopRangeError = (() => {
-    for (const filter of filters) {
+    for (const filter of desktopFilters) {
       if (filter.type !== "dateRange") continue;
       const shown = shownRange(filter.fromKey, filter.toKey, values);
       const message = financeRangeError(shown.from, shown.to);
@@ -135,6 +163,10 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
     }
     return null;
   })();
+
+  useEffect(() => {
+    onRangeError?.(desktopRangeError);
+  }, [desktopRangeError, onRangeError]);
 
   const yearHint = (() => {
     for (const filter of filters) {
@@ -188,7 +220,7 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
   };
 
   const apply = () => {
-    for (const filter of filters) {
+    for (const filter of visibleIn(filters, draft)) {
       if (filter.type !== "dateRange") continue;
       const message = financeRangeError(draft[filter.fromKey] ?? "", draft[filter.toKey] ?? "");
       if (message) {
@@ -214,9 +246,10 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
     setSheetOpen(false);
   };
 
+  const sheetFilters = visibleIn(filters, draft);
   const sheetRangeError = (() => {
     if (!sheetOpen) return null;
-    for (const filter of filters) {
+    for (const filter of sheetFilters) {
       if (filter.type !== "dateRange") continue;
       const message = financeRangeError(draft[filter.fromKey] ?? "", draft[filter.toKey] ?? "");
       if (message) return message;
@@ -226,13 +259,18 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
 
   const renderPeriod = (filter: Extract<FilterDef, { type: "period" }>, source: FilterValues, onPreset: (preset: string) => void, size: "filter" | "form") => {
     const status = filter.financialYear ?? "ready";
-    const preset = periodPresetForDates(source[filter.fromKey] ?? "", source[filter.toKey] ?? "", filter.rangeFor);
+    const options = periodSelectOptions(filter.rangeFor, status, filter.presets, filter.customLabel, filter.monthsInLabel);
+    const bothEmpty = !(source[filter.fromKey] ?? "") && !(source[filter.toKey] ?? "");
+    const matched = bothEmpty && filter.emptyPreset
+      ? filter.emptyPreset
+      : periodPresetForDates(source[filter.fromKey] ?? "", source[filter.toKey] ?? "", filter.rangeFor);
+    const preset = options.some((option) => option.value === matched) ? matched : "custom";
     return (
       <Dropdown
         key={filter.key}
         size={size}
         label={filter.label ?? "Period"}
-        options={periodSelectOptions(filter.rangeFor, status)}
+        options={options}
         value={preset}
         onChange={onPreset}
         className={size === "filter" ? controlClass : undefined}
@@ -245,7 +283,7 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
       {/* Desktop. Filters shrink so five of them and Reset stay on one line at 1440. */}
       <div className="hidden min-w-0 flex-nowrap items-center gap-2 md:flex">
         {search && <SearchBar {...search} className="min-w-0 max-w-[340px] flex-1 basis-0" />}
-        {filters.map((filter) => {
+        {desktopFilters.map((filter) => {
           if (filter.type === "select") {
             return (
               <Dropdown
@@ -348,7 +386,7 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
         onReset={() => { onReset(); setSheetOpen(false); }}
       >
         <div className="flex flex-col gap-4">
-          {filters.map((filter) => {
+          {sheetFilters.map((filter) => {
             if (filter.type === "select") {
               return (
                 <Dropdown
