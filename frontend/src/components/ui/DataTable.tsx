@@ -42,6 +42,10 @@ export type DataTableProps<T> = {
   loadingCount?: number;
   /** Minimum table width before it scrolls sideways inside its card. */
   minWidth?: number;
+  /** Tighter cell padding (12px instead of 16px), for a table with many columns or one inside a popup. */
+  dense?: boolean;
+  /** Caps the table's height (CSS, e.g. "46vh"): the rows scroll inside the card and the heading stays on top. */
+  maxHeight?: string;
   caption?: string;
   className?: string;
 };
@@ -71,6 +75,8 @@ export function DataTable<T>({
   loading = false,
   loadingCount = 8,
   minWidth = 720,
+  maxHeight,
+  dense = false,
   caption,
   className,
 }: DataTableProps<T>) {
@@ -78,6 +84,8 @@ export function DataTable<T>({
   const showPlaceholders = loading && rows.length === 0;
   if (!loading && rows.length === 0 && empty) return <>{empty}</>;
 
+  const edge = dense ? "px-3" : "px-4";
+  const cell = cx(edge, dense ? "py-3" : "py-3.5");
   const labelFor = (row: T) => groupLabel ? groupLabel(row) : columns[0]?.render(row);
 
   const progress = refreshing ? (
@@ -90,7 +98,7 @@ export function DataTable<T>({
     ? Array.from({ length: loadingCount }, (_, index) => (
         <tr key={`loading-${index}`} className="border-t border-line-soft">
           {columns.map((column) => (
-            <td key={column.key} className="px-4 py-3.5">
+            <td key={column.key} className={cell}>
               <span aria-hidden="true" className={cx(placeholder, column.align === "right" && "ml-auto w-16")} />
             </td>
           ))}
@@ -101,7 +109,7 @@ export function DataTable<T>({
         if (kind === "group") {
           return (
             <tr key={rowKey(row)} className="border-t border-line-soft bg-page">
-              <td colSpan={columns.length} className="px-4 py-2.5 text-label font-extrabold uppercase tracking-[0.4px] text-ink-2">
+              <td colSpan={columns.length} className={cx(edge, "py-2.5 text-label font-extrabold uppercase tracking-[0.4px] text-ink-2")}>
                 {labelFor(row)}
               </td>
             </tr>
@@ -124,7 +132,7 @@ export function DataTable<T>({
             )}
           >
             {columns.map((column) => (
-              <td key={column.key} className={cx("px-4 py-3.5 text-sm text-ink", summary && "font-extrabold", column.align === "right" && "text-right", column.className)}>
+              <td key={column.key} className={cx(cell, "text-sm text-ink", summary && "font-extrabold", column.align === "right" && "text-right", column.className)}>
                 {column.render(row)}
               </td>
             ))}
@@ -136,16 +144,16 @@ export function DataTable<T>({
     <div className={cx("relative", className)} aria-busy={loading || undefined}>
       {progress}
       <div className={cx("overflow-hidden rounded-card border border-line bg-card font-ui", phoneCard && "max-md:hidden")}>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" style={maxHeight ? { maxHeight } : undefined}>
           <table className="w-full border-collapse text-left" style={{ minWidth }}>
             {caption && <caption className="sr-only">{caption}</caption>}
-            <thead className="bg-table-head">
+            <thead className={cx("bg-table-head", maxHeight && "sticky top-0 z-[1]")}>
               <tr>
                 {columns.map((column) => (
                   <th
                     key={column.key}
                     scope="col"
-                    className={cx("whitespace-nowrap px-4 py-3.5 text-label font-bold uppercase tracking-[0.4px] text-ink-2", column.align === "right" && "text-right")}
+                    className={cx("whitespace-nowrap py-3.5 text-label font-bold", edge, "uppercase tracking-[0.4px] text-ink-2", column.align === "right" && "text-right")}
                   >
                     {column.header}
                   </th>

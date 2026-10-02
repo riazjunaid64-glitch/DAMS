@@ -5,7 +5,7 @@ import { useIdempotencyKeys } from "../../lib/idempotency.ts";
 import { formatPkr } from "../../utils/currency.ts";
 import { bookingApi } from "./bookingApi.ts";
 import type { BookingDetail } from "./detailTypes.ts";
-import { DialogTitle } from "./DialogTitle.tsx";
+import { DialogTitle } from "../../components/ui/DialogTitle.tsx";
 import { BOOKING_CHIPS, CUSTOM_CHIP, canSaveTerms, chipFor, termsErrors, termsFigures } from "./termsForm.ts";
 
 type Props = {

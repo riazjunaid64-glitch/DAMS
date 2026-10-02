@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 import { Button, ChoiceChips, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../components/ui";
 import { formatPkr } from "../../utils/currency.ts";
-import { DialogTitle } from "../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../components/ui/DialogTitle.tsx";
 import { commissionRebateApi } from "./api.ts";
 import { ReasonDialog } from "./ReasonDialog.tsx";
 import { SummaryStrip } from "./SummaryStrip.tsx";

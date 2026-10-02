@@ -53,6 +53,7 @@ export { Tabs, type TabItem, type TabsProps } from "./Tabs.tsx";
 export { ActionsMenu, type ActionItem, type ActionsMenuProps } from "./ActionsMenu.tsx";
 
 // 12 Popup
+export { DialogTitle } from "./DialogTitle.tsx";
 export { Modal, ConfirmDialog, type ModalProps, type ConfirmDialogProps } from "./Modal.tsx";
 export type { DialogAction } from "./DialogPanel.tsx";
 export { Overlay, type OverlayPlacement } from "./Overlay.tsx";

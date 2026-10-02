@@ -7,7 +7,7 @@ import { formatPkr } from "../../utils/currency.ts";
 import { useProofUpload } from "../proof/useProofUpload.ts";
 import { bookingApi } from "./bookingApi.ts";
 import type { BookingDetail, FinanceAccountOption, ScheduleItem } from "./detailTypes.ts";
-import { DialogTitle } from "./DialogTitle.tsx";
+import { DialogTitle } from "../../components/ui/DialogTitle.tsx";
 import { PAYMENT_METHODS, paymentErrors, referenceRequired, type PaymentErrors } from "./paymentForm.ts";
 
 export type PaymentTarget =

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Modal, useToast } from "../../components/ui";
 import { api } from "../../api/api.ts";
-import { DialogTitle } from "../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../components/ui/DialogTitle.tsx";
 import { CustomerForm, type CustomerFormErrors } from "./CustomerForm.tsx";
 import { customerFormErrors, customerPayload, formFromCustomer, type CustomerDetail } from "./customerForm.ts";
 import { conflictErrors, type ConflictBody } from "./duplicateFieldError.tsx";
