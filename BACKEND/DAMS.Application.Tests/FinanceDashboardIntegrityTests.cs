@@ -47,6 +47,7 @@ public sealed class FinanceDashboardIntegrityTests
         Assert.Equal(summary.TotalExpenses, breakdown.Items.Sum(i => i.Amount));
         Assert.False(breakdown.HasMore);
         Assert.Equal(8, breakdown.Items.Count);
+        Assert.Equal(8, breakdown.TotalCount);
 
         // Two kinds only, and reversals are the negative one — a row the reader has to know to
         // subtract by hand is a row that will be added instead.
@@ -282,6 +283,13 @@ public sealed class FinanceDashboardIntegrityTests
             "netProfit", null, PeriodStart, PeriodEnd, null, 0, 100));
         var rows = Assert.IsType<PagedResult<NetProfitLineDto>>(allowed.Value);
         Assert.Equal(business.NetProfit, rows.Items.Sum(i => i.Amount));
+
+        var deposits = Assert.IsType<OkObjectResult>(await controller.GetRows(
+            "customerDeposits", null, PeriodStart, PeriodEnd, world.BankId.ToString(), 0, 20));
+        Assert.Equal(0, Assert.IsType<PagedResult<CustomerDepositLineDto>>(deposits.Value).TotalCount);
+        var overdue = Assert.IsType<OkObjectResult>(await controller.GetRows(
+            "overdue", null, PeriodStart, PeriodEnd, world.BankId.ToString(), 0, 20));
+        Assert.Equal(0, Assert.IsType<PagedResult<OverdueLineDto>>(overdue.Value).TotalCount);
     }
 
     /// <summary>

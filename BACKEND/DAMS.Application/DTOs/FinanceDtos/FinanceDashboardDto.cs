@@ -329,12 +329,18 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal Percent { get; set; }
     }
 
-    /// <summary>One page of rows for an infinite-scroll table.</summary>
+    /// <summary>One page of rows for a paged table.</summary>
     public class PagedResult<T>
     {
         public List<T> Items { get; set; } = new();
 
         /// <summary>True when more rows exist beyond this page.</summary>
         public bool HasMore { get; set; }
+
+        /// <summary>
+        /// How many rows match the filters, paging aside. Filled for the four finance-home lists
+        /// (revenue, total expenses, customer deposits, overdue). Other lists leave it at 0.
+        /// </summary>
+        public int TotalCount { get; set; }
     }
 }

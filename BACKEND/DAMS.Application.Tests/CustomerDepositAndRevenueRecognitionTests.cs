@@ -422,10 +422,12 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         var firstPage = await finance.GetCustomerDepositPageAsync(null, Feb, 0, 2);
         Assert.Equal(2, firstPage.Items.Count);
         Assert.True(firstPage.HasMore);
+        Assert.Equal(3, firstPage.TotalCount);
         Assert.Equal(500_000m, firstPage.Items[0].DepositBalance); // ordered by size
         var secondPage = await finance.GetCustomerDepositPageAsync(null, Feb, 2, 2);
         Assert.Single(secondPage.Items);
         Assert.False(secondPage.HasMore);
+        Assert.Equal(3, secondPage.TotalCount);
 
         var byProject = await finance.GetCustomerDepositPageAsync(otherProject.ProjectId, Feb, 0, 20);
         Assert.Equal(100_000m, Assert.Single(byProject.Items).DepositBalance);
@@ -441,6 +443,35 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         var stillHeld = Assert.Single(asAtJan.Items, r => r.BookingId == world.BookingId);
         Assert.Equal(500_000m, stillHeld.DepositBalance);
         Assert.Equal(Feb, stillHeld.RecognitionDate);
+    }
+
+    [Fact]
+    public async Task OverdueList_ReportsTotalCount_AcrossPages()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 5_000_000m);
+        context.Installments.AddRange(
+            new Installment
+            {
+                BookingId = world.BookingId, SequenceNumber = 4, Amount = 100_000m,
+                Status = InstallmentStatus.Pending, DueDate = Jan, Type = InstallmentType.Regular
+            },
+            new Installment
+            {
+                BookingId = world.BookingId, SequenceNumber = 5, Amount = 50_000m,
+                Status = InstallmentStatus.Pending, DueDate = Jan, Type = InstallmentType.Possession
+            });
+        await context.SaveChangesAsync();
+        var finance = Finance(context);
+
+        var first = await finance.GetOverduePageAsync(null, 0, 1);
+        Assert.Equal(1, first.Items.Count);
+        Assert.True(first.HasMore);
+        Assert.Equal(2, first.TotalCount);
+        var second = await finance.GetOverduePageAsync(null, 1, 1);
+        Assert.Single(second.Items);
+        Assert.False(second.HasMore);
+        Assert.Equal(2, second.TotalCount);
     }
 
     // ── 19. Account detail reconciles with the Balance Sheet ─────────────────────────────────
@@ -491,6 +522,7 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
 
         var rows = await finance.GetRevenuePageAsync(null, Jan.AddDays(-1), Mar, 0, 20);
         var sale = Assert.Single(rows.Items);
+        Assert.Equal(1, rows.TotalCount);
         Assert.Equal("Unit Sale", sale.Source);
         Assert.Equal(5_000_000m, sale.Amount);
         Assert.Null(sale.ManualRevenueId); // read-only in the UI: no edit or delete affordance

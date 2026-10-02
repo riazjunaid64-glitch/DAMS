@@ -1431,8 +1431,10 @@ public sealed class SqlServerProductionInvariantTests
 
         var depositsPage = await finance.GetCustomerDepositPageAsync(null, new DateTime(2026, 2, 28), 0, 20);
         Assert.Empty(depositsPage.Items);
+        Assert.Equal(0, depositsPage.TotalCount);
         var asAtJanuary = await finance.GetCustomerDepositPageAsync(null, new DateTime(2026, 1, 31), 0, 20);
         Assert.Equal(3_000_000m, Assert.Single(asAtJanuary.Items).DepositBalance);
+        Assert.Equal(1, asAtJanuary.TotalCount);
     }
 
     /// <summary>
@@ -1531,6 +1533,7 @@ public sealed class SqlServerProductionInvariantTests
         var breakdown = await finance.GetCostBreakdownPageAsync(null, from, to, 0, 100);
         Assert.Equal(dashboard.Summary.TotalExpenses, breakdown.Items.Sum(i => i.Amount));
         Assert.Equal(3, breakdown.Items.Count);
+        Assert.Equal(3, breakdown.TotalCount);
 
         // One Net Profit: the statement agrees with the card, and the sheet names the difference.
         var measuredPnl = await MeasureAsync(counter, () => finance.GetProfitAndLossAsync(null, from, to));
@@ -5779,6 +5782,7 @@ public sealed class SqlServerProductionInvariantTests
         Assert.True(dashboard.Trend.Count <= 12, $"{dashboard.Trend.Count} buckets");
         var breakdown = await finance.GetCostBreakdownPageAsync(null, from, to, 0, 1000);
         Assert.Equal(dashboard.Summary.TotalExpenses, breakdown.Items.Sum(i => i.Amount));
+        Assert.Equal(breakdown.Items.Count, breakdown.TotalCount);
 
         // The benchmark, as a ceiling rather than a number: at representative volume one refresh is
         // a handful of grouped queries, so seconds-per-refresh would mean something is wrong.

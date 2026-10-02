@@ -263,7 +263,9 @@ namespace DAMS.Application.Services
                     RowVersion = null
                 });
 
-            var raw = await recognisedSales.Concat(manual).Concat(retained)
+            var union = recognisedSales.Concat(manual).Concat(retained);
+            var totalCount = await union.CountAsync(cancellationToken);
+            var raw = await union
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Source)
                 .ThenByDescending(x => x.SortId)
@@ -289,7 +291,7 @@ namespace DAMS.Application.Services
                 Attachment = MapAttachment(r.AttachmentFileName, r.AttachmentContentType, r.AttachmentFileSize, r.AttachmentUploadedAt)
             }).ToList();
 
-            return new PagedResult<RevenueLineDto> { Items = items, HasMore = raw.Count > take };
+            return new PagedResult<RevenueLineDto> { Items = items, HasMore = raw.Count > take, TotalCount = totalCount };
         }
 
         /// <summary>
@@ -408,16 +410,18 @@ namespace DAMS.Application.Services
                     CancellationDate = cancellationDate
                 };
 
+            var totalCount = await rows.CountAsync(cancellationToken);
             var page = await rows.OrderByDescending(r => r.DepositBalance).ThenBy(r => r.BookingId)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            var items = page.Take(take).ToList();
             // Status is an enum: formatted in memory because enum.ToString does not translate.
             var statuses = await _context.Bookings.AsNoTracking()
-                .Where(b => page.Select(r => r.BookingId).Contains(b.Id))
+                .Where(b => items.Select(r => r.BookingId).Contains(b.Id))
                 .Select(b => new { b.Id, b.Status }).ToListAsync(cancellationToken);
-            foreach (var row in page)
+            foreach (var row in items)
                 row.BookingStatus = statuses.FirstOrDefault(s => s.Id == row.BookingId)?.Status.ToString() ?? string.Empty;
 
-            return Page(page, take);
+            return new PagedResult<CustomerDepositLineDto> { Items = items, HasMore = page.Count > take, TotalCount = totalCount };
         }
 
         public async Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take, CancellationToken cancellationToken = default)
@@ -443,10 +447,10 @@ namespace DAMS.Application.Services
         {
             // Fetch the page with Type as an enum, then format it in memory (enum.ToString
             // is not reliably translatable to SQL).
-            var balances = OverdueBalanceQuery(projectId)
-                .OrderBy(x => x.DueDate).ThenBy(x => x.SortId);
-
-            var raw = await balances.Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            var balances = OverdueBalanceQuery(projectId);
+            var totalCount = await balances.CountAsync(cancellationToken);
+            var raw = await balances.OrderBy(x => x.DueDate).ThenBy(x => x.SortId)
+                .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
 
             var items = raw.Take(take).Select(r => new OverdueLineDto
             {
@@ -463,7 +467,7 @@ namespace DAMS.Application.Services
                 OverdueAmount = r.OverdueAmount
             }).ToList();
 
-            return new PagedResult<OverdueLineDto> { Items = items, HasMore = raw.Count > take };
+            return new PagedResult<OverdueLineDto> { Items = items, HasMore = raw.Count > take, TotalCount = totalCount };
         }
 
         /// <summary>
@@ -744,10 +748,12 @@ namespace DAMS.Application.Services
                     AttachmentUploadedAt = p.Attachment != null ? p.Attachment.UploadedAt : (DateTime?)null
                 });
 
-            var raw = await expenses.Concat(commissionAccrued).Concat(commissionReleased)
+            var union = expenses.Concat(commissionAccrued).Concat(commissionReleased)
                 .Concat(rebatePayments).Concat(rebateReversals)
                 .Concat(nonCashCredits).Concat(nonCashCreditReversals)
-                .Concat(loanInterest).Concat(assetPurchases)
+                .Concat(loanInterest).Concat(assetPurchases);
+            var totalCount = await union.CountAsync(cancellationToken);
+            var raw = await union
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -780,7 +786,7 @@ namespace DAMS.Application.Services
                 }
             }).ToList();
 
-            return new PagedResult<CostLineDto> { Items = items, HasMore = raw.Count > take };
+            return new PagedResult<CostLineDto> { Items = items, HasMore = raw.Count > take, TotalCount = totalCount };
         }
 
         private sealed class CostRow

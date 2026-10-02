@@ -1,17 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { isCurrentRowsRequest, rowsKey, visibleRows, type Loaded } from "./usePaginatedRows";
+import { isCurrentRowsRequest, rowsKey, visibleRows, type Loaded } from "./useFinanceRows.ts";
 
 /**
- * The finance dashboard picks its table columns from the active view, and each view's columns read
- * fields only that view's rows have. So rows and columns must never be a render out of step: a
- * revenue row handed to the fixed-asset columns has no whtRate, and the cell that formats it took
- * the whole screen down. These tests pin the rule that prevents it.
+ * The finance home picks its table columns from the active view, and each view's columns read
+ * fields only that view's rows have. Rows and columns must never be a render out of step.
  */
-describe("usePaginatedRows row/key coupling", () => {
+describe("finance row/key coupling", () => {
   const revenueRows: Loaded<{ id: number }> = {
     key: rowsKey("revenue", "", "", "", ""),
     rows: [{ id: 1 }, { id: 2 }],
     hasMore: true,
+    totalCount: 2,
     loading: false,
     error: null,
   };
@@ -19,12 +18,9 @@ describe("usePaginatedRows row/key coupling", () => {
   it("withholds rows fetched for a different view", () => {
     const assets = rowsKey("assetPurchase", "", "", "", "");
     const shown = visibleRows(revenueRows, assets);
-
     expect(shown.rows).toEqual([]);
     expect(shown.key).toBe(assets);
-    // Reported as loading, because the rows for what is being rendered genuinely have not arrived.
     expect(shown.loading).toBe(true);
-    // hasMore belonged to the old view; offering it would page the wrong dataset.
     expect(shown.hasMore).toBe(false);
   });
 
@@ -50,7 +46,6 @@ describe("usePaginatedRows row/key coupling", () => {
   });
 
   it("cannot confuse two different filter combinations", () => {
-    // A separator-joined key would collide here; a serialised one cannot.
     expect(rowsKey("revenue", "1 2", "", "", "")).not.toBe(rowsKey("revenue", "1", "2", "", ""));
     expect(rowsKey("a", "", "", "", "")).not.toBe(rowsKey("", "a", "", "", ""));
   });
@@ -59,7 +54,6 @@ describe("usePaginatedRows row/key coupling", () => {
     const live = new AbortController();
     expect(isCurrentRowsRequest(4, 4, live.signal)).toBe(true);
     expect(isCurrentRowsRequest(3, 4, live.signal)).toBe(false);
-
     live.abort();
     expect(isCurrentRowsRequest(4, 4, live.signal)).toBe(false);
   });
