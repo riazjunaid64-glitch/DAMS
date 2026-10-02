@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_PAGE_SIZE } from "../components/ui/pageItems.ts";
 import { useIsPhone } from "../components/ui/useMediaQuery.ts";
-import { isCurrentRowsRequest } from "./usePaginatedRows.ts";
+
+/** A response may update the table only while it is both the newest request and still wanted. */
+export function isCurrentRowsRequest(
+  requestId: number,
+  currentRequestId: number,
+  signal: AbortSignal,
+): boolean {
+  return requestId === currentRequestId && !signal.aborted;
+}
 
 export type PagedListQuery = {
   /** 1-based page. Desktop asks for one page; a phone delete may ask for the pages loaded so far. */
@@ -68,8 +76,9 @@ export function pageAfterEmptyDelete(page: number, itemsOnPage: number): number 
  * Page number + filters, one request at a time.
  *
  * Desktop replaces the rows for the page. A phone appends. A filter change (a new `queryKey`)
- * goes back to page 1. Answers that arrive late are ignored — the same rule as
- * `isCurrentRowsRequest` in usePaginatedRows.
+ * goes back to page 1 and the rows for the previous key are withheld in that same render, so a
+ * view switch never hands the new columns a row from the old one. Answers that arrive late are
+ * ignored (`isCurrentRowsRequest`).
  */
 export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_SIZE }: UsePagedListOptions<T>): UsePagedListResult<T> {
   const isPhone = useIsPhone();
@@ -134,7 +143,8 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
       .catch((caught: unknown) => {
         if (!isCurrentRowsRequest(id, reqIdRef.current, controller.signal)) return;
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setError("Unable to load rows.");
+        const message = caught instanceof Error && caught.message.trim() ? caught.message : "Unable to load rows.";
+        setError(message);
         setLoading(false);
         if (!append) setRows([]);
       })
@@ -178,14 +188,17 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
     setRequest((current) => ({ ...current, append: false, refresh: current.refresh + 1, intent: "delete" }));
   }, []);
 
-  const loadMoreTotal = total != null ? total : hasMore ? rows.length + pageSize : rows.length;
+  const switching = activeKey !== queryKey;
+  const shownRows = switching ? [] : rows;
+  const shownTotal = switching ? null : total;
+  const loadMoreTotal = shownTotal != null ? shownTotal : hasMore ? shownRows.length + pageSize : shownRows.length;
 
   return {
-    rows,
-    total,
-    loading,
-    loadingMore,
-    error,
+    rows: shownRows,
+    total: shownTotal,
+    loading: switching || loading,
+    loadingMore: switching ? false : loadingMore,
+    error: switching ? null : error,
     page: request.page,
     setPage,
     loadMore,
@@ -195,14 +208,14 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
     pagination: {
       page: request.page,
       onPageChange: setPage,
-      totalCount: total ?? undefined,
+      totalCount: shownTotal ?? undefined,
       pageSize,
     },
     loadMoreBar: {
-      shown: rows.length,
+      shown: shownRows.length,
       total: loadMoreTotal,
       onLoadMore: loadMore,
-      loading: loadingMore,
+      loading: switching ? false : loadingMore,
     },
   };
 }

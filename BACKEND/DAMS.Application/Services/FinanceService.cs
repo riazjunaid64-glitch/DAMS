@@ -159,10 +159,9 @@ namespace DAMS.Application.Services
 
         // ── Paged table rows ────────────────────────────────────────────────────────
         // Each method fetches `take + 1` rows in SQL (OFFSET/FETCH) so HasMore is known
-        // from that extra row. TotalCount is optional on PagedResult: a later page ticket
-        // fills it with one COUNT under the same filters, and only when the caller asks
-        // (PagedResult.IncludeTotal — skip == 0 or includeTotal) so scrolling stays cheap.
-        // These finance home lists do not run that count yet.
+        // from that extra row, and counts the same query without paging. The finance home
+        // lists fill TotalCount on every call (including later pages) so desktop page
+        // numbers and the phone "Showing n of N" line can both be stated.
 
         public async Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default)
         {
@@ -266,7 +265,9 @@ namespace DAMS.Application.Services
                     RowVersion = null
                 });
 
-            var raw = await recognisedSales.Concat(manual).Concat(retained)
+            var united = recognisedSales.Concat(manual).Concat(retained);
+            var totalCount = await united.CountAsync(cancellationToken);
+            var raw = await united
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Source)
                 .ThenByDescending(x => x.SortId)
@@ -292,7 +293,7 @@ namespace DAMS.Application.Services
                 Attachment = MapAttachment(r.AttachmentFileName, r.AttachmentContentType, r.AttachmentFileSize, r.AttachmentUploadedAt)
             }).ToList();
 
-            return new PagedResult<RevenueLineDto> { Items = items, HasMore = raw.Count > take };
+            return new PagedResult<RevenueLineDto> { Items = items, HasMore = raw.Count > take, TotalCount = totalCount };
         }
 
         /// <summary>
@@ -411,6 +412,7 @@ namespace DAMS.Application.Services
                     CancellationDate = cancellationDate
                 };
 
+            var totalCount = await rows.CountAsync(cancellationToken);
             var page = await rows.OrderByDescending(r => r.DepositBalance).ThenBy(r => r.BookingId)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
             // Status is an enum: formatted in memory because enum.ToString does not translate.
@@ -420,7 +422,9 @@ namespace DAMS.Application.Services
             foreach (var row in page)
                 row.BookingStatus = statuses.FirstOrDefault(s => s.Id == row.BookingId)?.Status.ToString() ?? string.Empty;
 
-            return Page(page, take);
+            var result = Page(page, take);
+            result.TotalCount = totalCount;
+            return result;
         }
 
         public async Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take, CancellationToken cancellationToken = default)
@@ -446,10 +450,11 @@ namespace DAMS.Application.Services
         {
             // Fetch the page with Type as an enum, then format it in memory (enum.ToString
             // is not reliably translatable to SQL).
-            var balances = OverdueBalanceQuery(projectId)
-                .OrderBy(x => x.DueDate).ThenBy(x => x.SortId);
+            var balances = OverdueBalanceQuery(projectId);
+            var totalCount = await balances.CountAsync(cancellationToken);
+            var ordered = balances.OrderBy(x => x.DueDate).ThenBy(x => x.SortId);
 
-            var raw = await balances.Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            var raw = await ordered.Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
 
             var items = raw.Take(take).Select(r => new OverdueLineDto
             {
@@ -466,7 +471,7 @@ namespace DAMS.Application.Services
                 OverdueAmount = r.OverdueAmount
             }).ToList();
 
-            return new PagedResult<OverdueLineDto> { Items = items, HasMore = raw.Count > take };
+            return new PagedResult<OverdueLineDto> { Items = items, HasMore = raw.Count > take, TotalCount = totalCount };
         }
 
         /// <summary>
@@ -747,10 +752,12 @@ namespace DAMS.Application.Services
                     AttachmentUploadedAt = p.Attachment != null ? p.Attachment.UploadedAt : (DateTime?)null
                 });
 
-            var raw = await expenses.Concat(commissionAccrued).Concat(commissionReleased)
+            var united = expenses.Concat(commissionAccrued).Concat(commissionReleased)
                 .Concat(rebatePayments).Concat(rebateReversals)
                 .Concat(nonCashCredits).Concat(nonCashCreditReversals)
-                .Concat(loanInterest).Concat(assetPurchases)
+                .Concat(loanInterest).Concat(assetPurchases);
+            var totalCount = await united.CountAsync(cancellationToken);
+            var raw = await united
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -783,7 +790,7 @@ namespace DAMS.Application.Services
                 }
             }).ToList();
 
-            return new PagedResult<CostLineDto> { Items = items, HasMore = raw.Count > take };
+            return new PagedResult<CostLineDto> { Items = items, HasMore = raw.Count > take, TotalCount = totalCount };
         }
 
         private sealed class CostRow

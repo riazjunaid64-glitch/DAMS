@@ -64,6 +64,13 @@ describe("finance period ranges", () => {
     expect(financePeriodLabel("lastYear", 7, now)).toBe("Last Year (Jul 2025 – Jun 2026)");
   });
 
+  it("covers the previous calendar month, wrapping January to December", () => {
+    expect(buildPeriodRange("lastMonth", 7, new Date(2026, 7, 12))).toEqual({ from: "2026-07-01", to: "2026-07-31" });
+    expect(financePeriodLabel("lastMonth", 7, new Date(2026, 7, 12))).toBe("Last Month (Jul 2026)");
+    expect(buildPeriodRange("lastMonth", null, new Date(2026, 0, 15))).toEqual({ from: "2025-12-01", to: "2025-12-31" });
+    expect(financePeriodLabel("lastMonth", null, new Date(2026, 0, 15))).toBe("Last Month (Dec 2025)");
+  });
+
   it("names the month the monthly preset covers", () => {
     expect(financePeriodLabel("month", 7, new Date(2026, 7, 12))).toBe("This Month (Aug 2026)");
     expect(financePeriodLabel("month", 7, new Date(2027, 0, 31))).toBe("This Month (Jan 2027)");

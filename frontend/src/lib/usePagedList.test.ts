@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pageAfterEmptyDelete, usePagedList, type PagedListPage } from "./usePagedList.ts";
+import { isCurrentRowsRequest, pageAfterEmptyDelete, usePagedList, type PagedListPage } from "./usePagedList.ts";
 
 function phone(matches: boolean) {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
@@ -42,6 +42,8 @@ describe("usePagedList", () => {
     await waitFor(() => expect(fetchPage).toHaveBeenCalled());
     key = "closed";
     rerender({ queryKey: "closed" });
+    expect(result.current.rows).toEqual([]);
+    expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.rows).toEqual([{ id: "fresh" }]));
     expect(result.current.page).toBe(1);
     await act(async () => { first.resolve({ items: [{ id: "stale" }], totalCount: 1, hasMore: false }); });
@@ -77,5 +79,22 @@ describe("usePagedList", () => {
     act(() => result.current.afterDelete());
     await waitFor(() => expect(result.current.page).toBe(1));
     await waitFor(() => expect(result.current.rows).toEqual([{ id: 1 }]));
+  });
+
+  it("shows the server's message when a load fails", async () => {
+    const fetchPage = vi.fn(() => Promise.reject(new Error("The list could not be read.")));
+    const { result } = renderHook(() => usePagedList({ queryKey: "all", fetchPage, pageSize: 20 }));
+    await waitFor(() => expect(result.current.error).toBe("The list could not be read."));
+    expect(result.current.rows).toEqual([]);
+  });
+});
+
+describe("isCurrentRowsRequest", () => {
+  it("accepts only the newest request that has not been aborted", () => {
+    const live = new AbortController();
+    expect(isCurrentRowsRequest(4, 4, live.signal)).toBe(true);
+    expect(isCurrentRowsRequest(3, 4, live.signal)).toBe(false);
+    live.abort();
+    expect(isCurrentRowsRequest(4, 4, live.signal)).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ import { activeFilterCount } from "./filterCount.ts";
 
 const NOW = new Date(2026, 6, 15);
 
-function rangeFor(preset: "today" | "month" | "year" | "lastYear" | "all") {
+function rangeFor(preset: "today" | "month" | "lastMonth" | "year" | "lastYear" | "all") {
   return buildPeriodRange(preset, 7, NOW);
 }
 
