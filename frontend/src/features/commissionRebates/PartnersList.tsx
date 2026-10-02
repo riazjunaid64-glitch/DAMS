@@ -10,6 +10,8 @@ import type { Partner } from "./types.ts";
 const STATUS_OPTIONS = [{ value: "active", label: "Active" }, { value: "inactive", label: "Inactive" }];
 /** Inactive partners stay out of the way until asked for. */
 const DEFAULT_STATUS = "active";
+/** KAN-97: the search waits 250 ms after typing stops. */
+const SEARCH_DEBOUNCE_MS = 250;
 const SEARCH_HINT = "Partner, code, contact or tax ID";
 
 const usedIn = (partner: Partner) => `${partner.commissionCount} ${partner.commissionCount === 1 ? "commission" : "commissions"}`;
@@ -134,7 +136,7 @@ export function PartnersList({ adding, onAddClose, onChanged, openPartnerId, onO
   return (
     <>
       <FilterBar
-        search={{ value: search, onSearch: setSearch, placeholder: SEARCH_HINT }}
+        search={{ value: search, onSearch: setSearch, placeholder: SEARCH_HINT, debounceMs: SEARCH_DEBOUNCE_MS }}
         filters={[{ type: "select", key: "status", label: "Status", allLabel: "All", options: STATUS_OPTIONS }]}
         values={{ status }}
         defaults={{ status: DEFAULT_STATUS }}

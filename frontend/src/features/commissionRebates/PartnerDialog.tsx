@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 import { Dropdown, Modal, Notice, TextField, useToast } from "../../components/ui";
 import { commissionRebateApi } from "./api.ts";
-import { PARTNER_TYPES } from "./forms.ts";
+import { PARTNER_TYPES, isValidEmail } from "./forms.ts";
 import type { Partner } from "./types.ts";
 
 type Props = {
@@ -18,7 +18,7 @@ export function PartnerDialog({ onClose, onSaved }: Props) {
   const toast = useToast();
   const formId = useId();
   const [fields, setFields] = useState({ name: "", partnerType: "Agency", phone: "", email: "" });
-  const [shown, setShown] = useState<{ name?: string }>({});
+  const [shown, setShown] = useState<{ name?: string; email?: string }>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,6 +27,10 @@ export function PartnerDialog({ onClose, onSaved }: Props) {
     if (saving) return;
     if (!fields.name.trim()) {
       setShown({ name: "Enter the partner's name." });
+      return;
+    }
+    if (fields.email.trim() && !isValidEmail(fields.email)) {
+      setShown({ email: "Enter a valid email address." });
       return;
     }
     setSaving(true);
@@ -67,7 +71,7 @@ export function PartnerDialog({ onClose, onSaved }: Props) {
         />
         <Dropdown label="Type" required disabled={saving} options={PARTNER_TYPES} value={fields.partnerType} onChange={(partnerType) => setFields({ ...fields, partnerType })} />
         <TextField label="Phone" type="tel" maxLength={50} disabled={saving} value={fields.phone} onChange={(event) => setFields({ ...fields, phone: event.target.value })} />
-        <TextField label="Email" type="email" maxLength={200} disabled={saving} value={fields.email} onChange={(event) => setFields({ ...fields, email: event.target.value })} />
+        <TextField label="Email" type="email" maxLength={200} disabled={saving} value={fields.email} error={shown.email} onChange={(event) => { setFields({ ...fields, email: event.target.value }); setShown({}); }} />
       </form>
     </Modal>
   );

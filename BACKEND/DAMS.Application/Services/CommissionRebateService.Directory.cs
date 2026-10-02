@@ -64,7 +64,7 @@ namespace DAMS.Application.Services
                 try
                 {
                     await _context.SaveChangesAsync(cancellationToken);
-                    return await GetPartnerAsync(partner.Id, cancellationToken);
+                    return await GetPartnerByIdAsync(partner.Id, cancellationToken);
                 }
                 catch (DbUpdateException) when (generated && attempt < MaxGeneratedCodeAttempts)
                 {
@@ -95,7 +95,7 @@ namespace DAMS.Application.Services
             partner.UpdatedAt = DateTime.UtcNow;
             Audit(FinancialWorkflowAction.PartnerUpdated, actor, partnerId: id);
             await _context.SaveChangesAsync(cancellationToken);
-            return await GetPartnerAsync(id, cancellationToken);
+            return await GetPartnerByIdAsync(id, cancellationToken);
         }
 
         public async Task<ThirdPartyPartnerDto> SetPartnerStatusAsync(int id, SetPartnerStatusDto dto,
@@ -111,7 +111,7 @@ namespace DAMS.Application.Services
             Audit(dto.IsActive ? FinancialWorkflowAction.PartnerActivated : FinancialWorkflowAction.PartnerDeactivated,
                 actor, partnerId: id, reason: dto.Reason);
             await _context.SaveChangesAsync(cancellationToken);
-            return await GetPartnerAsync(id, cancellationToken);
+            return await GetPartnerByIdAsync(id, cancellationToken);
         }
 
         public Task<ThirdPartyAttributionDto> SaveAttributionAsync(int? id, SaveThirdPartyAttributionDto dto,
@@ -282,10 +282,6 @@ namespace DAMS.Application.Services
                 ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
             }).SingleAsync(cancellationToken);
 
-        private async Task<ThirdPartyPartnerDto> GetPartnerAsync(int id, CancellationToken cancellationToken) =>
-            await ProjectPartners(_context.ThirdPartyPartners.AsNoTracking().Where(p => p.Id == id))
-                .SingleAsync(cancellationToken);
-
         private static IQueryable<ThirdPartyPartnerDto> ProjectPartners(IQueryable<ThirdPartyPartner> query) =>
             query.Select(p => new ThirdPartyPartnerDto
             {
@@ -300,8 +296,8 @@ namespace DAMS.Application.Services
         private const string PartnerCodePrefix = "PTR-";
 
         // Sequential rather than random so the code stays a readable directory reference. A concurrent
-        // create that lands on the same number is caught by the unique check in EnsurePartnerUniqueAsync
-        // and surfaces as a retryable message rather than a duplicate row.
+        // create that lands on the same number loses to the unique index on the code, and CreatePartnerAsync
+        // then takes the next free code instead of failing.
         private async Task<string> NextPartnerCodeAsync(CancellationToken cancellationToken)
         {
             var codes = await _context.ThirdPartyPartners.AsNoTracking()

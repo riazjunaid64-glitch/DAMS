@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { Dropdown, Modal, Notice, TextArea, TextField, useToast } from "../../components/ui";
 import { commissionRebateApi } from "./api.ts";
-import { PARTNER_TYPES } from "./forms.ts";
+import { PARTNER_TYPES, isValidEmail } from "./forms.ts";
 import type { Partner } from "./types.ts";
 
 type Fields = {
@@ -25,7 +25,6 @@ const fieldsOf = (partner: Partner): Fields => ({
 
 const optional = (label: string): ReactNode => <>{label} <span className="font-normal text-ink-muted">(optional)</span></>;
 const orNull = (value: string) => value.trim() || null;
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -75,7 +74,7 @@ export function PartnerFormDialog({ partner, onClose, onSaved }: Props) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (saving || !ready) return;
-    if (fields.email.trim() && !EMAIL.test(fields.email.trim())) {
+    if (fields.email.trim() && !isValidEmail(fields.email)) {
       setEmailError("Enter a valid email address.");
       return;
     }

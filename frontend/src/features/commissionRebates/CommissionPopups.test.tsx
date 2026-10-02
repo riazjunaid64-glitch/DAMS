@@ -122,6 +122,17 @@ describe("Add commission with a new partner", () => {
     expect(commissionRebateApi.savePartner).toHaveBeenCalledWith({ name: "Noor Brokers", partnerType: "Agency", phone: null, email: null });
   });
 
+  it("refuses a New partner email that is not an email address", async () => {
+    wrap(<CommissionDialog bookingId={13} workspace={figures} existing={null} partners={[]} takenPartnerIds={new Set()} run={vi.fn()} onPartnerCreated={vi.fn()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "+ New partner" }));
+    const partnerDialog = within((await screen.findAllByRole("dialog")).at(-1)!);
+    fireEvent.change(partnerDialog.getByLabelText(/Name/), { target: { value: "Noor Brokers" } });
+    fireEvent.change(partnerDialog.getByLabelText(/Email/), { target: { value: "abc" } });
+    fireEvent.click(partnerDialog.getByRole("button", { name: "Save partner" }));
+    expect(await partnerDialog.findByText("Enter a valid email address.")).toBeTruthy();
+    expect(commissionRebateApi.savePartner).not.toHaveBeenCalled();
+  });
+
   it("works the commission out live as the percentage is typed", () => {
     wrap(<CommissionDialog bookingId={13} workspace={figures} existing={null} partners={[]} takenPartnerIds={new Set()} run={vi.fn()} onPartnerCreated={vi.fn()} onClose={vi.fn()} />);
     fireEvent.change(screen.getByLabelText(/Percentage/), { target: { value: "2" } });

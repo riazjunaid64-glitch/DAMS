@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ToastProvider } from "../components/ui/Toast.tsx";
@@ -410,6 +410,22 @@ describe("Partners tab", () => {
     fireEvent.change(box!, { target: { value: "Imran" } });
     await waitFor(() => expect(lastCall(api.partners).slice(0, 3)).toEqual(["Imran", true, 0]), { timeout: 2000 });
     expect(await screen.findByRole("button", { name: "Reset" })).toBeTruthy();
+  });
+
+  it("runs the search 250 ms after typing stops", async () => {
+    open();
+    await screen.findAllByText("ali");
+    const calls = api.partners.mock.calls.length;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.change(screen.getAllByRole("searchbox", { name: "Partner, code, contact or tax ID" })[0]!, { target: { value: "Imran" } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(240); });
+      expect(api.partners.mock.calls.length).toBe(calls);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+      expect(lastCall(api.partners)[0]).toBe("Imran");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("explains an empty list and an error", async () => {
