@@ -25,8 +25,9 @@ namespace DAMS.Api.Controllers
 
         [HttpGet("partners")]
         public Task<IActionResult> Partners([FromQuery] string? search, [FromQuery] bool? isActive,
-            [FromQuery] int skip = 0, [FromQuery] int take = 25, CancellationToken cancellationToken = default) =>
-            Run(() => _service.GetPartnersAsync(search, isActive, skip, take, cancellationToken));
+            [FromQuery] int skip = 0, [FromQuery] int take = 25, [FromQuery] bool includeTotal = false,
+            CancellationToken cancellationToken = default) =>
+            Run(() => _service.GetPartnersAsync(search, isActive, skip, take, includeTotal, cancellationToken));
 
         [HttpPost("partners")]
         public Task<IActionResult> CreatePartner([FromBody] SaveThirdPartyPartnerDto dto, CancellationToken cancellationToken) =>
@@ -64,14 +65,14 @@ namespace DAMS.Api.Controllers
         [HttpGet("commissions")]
         public Task<IActionResult> Commissions([FromQuery] BookingCommissionStatus? status, [FromQuery] int? partnerId,
             [FromQuery] int? projectId, [FromQuery] int skip = 0, [FromQuery] int take = 25,
-            CancellationToken cancellationToken = default) =>
-            Run(() => _service.GetCommissionsAsync(status, partnerId, projectId, skip, take, cancellationToken));
+            [FromQuery] bool includeTotal = false, CancellationToken cancellationToken = default) =>
+            Run(() => _service.GetCommissionsAsync(status, partnerId, projectId, skip, take, includeTotal, cancellationToken));
 
         [HttpGet("rebates")]
         public Task<IActionResult> Rebates([FromQuery] CustomerRebateStatus? status, [FromQuery] int? projectId,
-            [FromQuery] int skip = 0, [FromQuery] int take = 25,
+            [FromQuery] int skip = 0, [FromQuery] int take = 25, [FromQuery] bool includeTotal = false,
             CancellationToken cancellationToken = default) =>
-            Run(() => _service.GetRebatesAsync(status, projectId, skip, take, cancellationToken));
+            Run(() => _service.GetRebatesAsync(status, projectId, skip, take, includeTotal, cancellationToken));
 
         [HttpGet("bookings/{bookingId:int}")]
         public Task<IActionResult> BookingWorkspace(int bookingId, CancellationToken cancellationToken) =>

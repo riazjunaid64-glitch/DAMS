@@ -81,7 +81,7 @@ describe("Pay commission", () => {
     fireEvent.click(primary("Pay commission"));
 
     expect(await screen.findByText(/require the partner's bank name/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open the partner page" }).getAttribute("href")).toBe("/finance/commissions-rebates");
+    expect(screen.getByRole("link", { name: "Open the partner page" }).getAttribute("href")).toBe(`/finance/commissions-rebates?tab=partners&partner=${commission.partnerId}`);
     expect((screen.getByLabelText(/Reference/) as HTMLInputElement).value).toBe("TRX-1");
     expect(onClose).not.toHaveBeenCalled();
   });

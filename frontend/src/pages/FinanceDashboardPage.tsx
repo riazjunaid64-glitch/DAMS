@@ -366,7 +366,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const openCost = async (row: CostLine) => {
     if (row.source === "commission" || row.source === "rebate" || row.source === "customerCredit") {
-      navigate("/finance/commissions-rebates");
+      navigate(`/finance/commissions-rebates?tab=${row.source === "commission" ? "commissions" : "rebates"}`);
       return;
     }
     if (row.source === "loanInterest") {

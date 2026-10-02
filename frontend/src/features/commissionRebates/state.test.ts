@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commissionActions, commissionAdjustmentNote, commissionAllocationPercent, commissionAttributionFor, commissionBases, commissionBasisFor, commissionRequestBody, commissionRuleFor, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions, rebateBases, rebateRequestBody, usesStoredBasisAmount } from "./state";
+import { commissionActions, commissionAdjustmentNote, commissionAllocationPercent, commissionAttributionFor, commissionBases, commissionBasisFor, commissionRequestBody, commissionRuleFor, idempotencyKey, money, rebateActions, rebateBases, rebateRequestBody, usesStoredBasisAmount } from "./state";
 import type { Commission, Rebate } from "./types";
 
 describe("commission and rebate UI state", () => {
@@ -37,16 +37,8 @@ describe("commission and rebate UI state", () => {
     expect(rebateActions("ReversalRequired").canReverse).toBe(true);
   });
 
-  it("reads every status back as a plain label", () => {
-    expect(isPendingStatus("Pending")).toBe(true);
-    expect(isPendingStatus("Paid")).toBe(false);
-    expect(prettyEnum("Pending")).toBe("Pending");
-    expect(prettyEnum("ReversalRequired")).toBe("Reversal Required");
-  });
-
-  it("generates distinct retry keys and readable financial labels", () => {
+  it("generates distinct retry keys and formats money", () => {
     expect(idempotencyKey("payout")).not.toBe(idempotencyKey("payout"));
-    expect(prettyEnum("OutstandingBalanceReduction")).toBe("Outstanding Balance Reduction");
     expect(money(1234.5)).toContain("1,234.50");
   });
 

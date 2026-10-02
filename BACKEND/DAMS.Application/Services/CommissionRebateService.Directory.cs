@@ -19,7 +19,7 @@ namespace DAMS.Application.Services
         };
 
         public async Task<PagedResult<ThirdPartyPartnerDto>> GetPartnersAsync(string? search, bool? isActive,
-            int skip, int take,
+            int skip, int take, bool includeTotal = false,
             CancellationToken cancellationToken = default)
         {
             skip = Math.Max(0, skip);
@@ -30,16 +30,16 @@ namespace DAMS.Application.Services
             {
                 var term = search.Trim();
                 query = query.Where(p => p.Name.Contains(term) || p.InternalCode.Contains(term)
+                    || (p.ContactPerson != null && p.ContactPerson.Contains(term))
                     || (p.Phone != null && p.Phone.Contains(term)) || (p.Email != null && p.Email.Contains(term))
                     || (p.Cnic != null && p.Cnic.Contains(term)) || (p.Ntn != null && p.Ntn.Contains(term)));
             }
+            int? total = PagedResult<ThirdPartyPartnerDto>.IncludeTotal(skip, includeTotal)
+                ? await query.CountAsync(cancellationToken)
+                : null;
             var rows = await ProjectPartners(query.OrderByDescending(p => p.IsActive).ThenBy(p => p.Name).ThenBy(p => p.Id))
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
-            return new PagedResult<ThirdPartyPartnerDto>
-            {
-                Items = rows.Take(take).ToList(),
-                HasMore = rows.Count > take
-            };
+            return PagedResult<ThirdPartyPartnerDto>.Page(rows, take, total);
         }
 
         public async Task<ThirdPartyPartnerDto> CreatePartnerAsync(SaveThirdPartyPartnerDto dto,

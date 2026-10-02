@@ -1,4 +1,3 @@
-import type { KeyboardEvent } from "react";
 import type { CalculationBasis, CalculationType, Commission, CommissionStatus, Rebate, RebateMethod, RebateStatus } from "./types";
 
 // A commission or rebate is Pending from entry until the money is fully paid or applied, whether or
@@ -169,8 +168,6 @@ export function rebateRequestBody(form: RebateFormState, existing: Rebate | null
   };
 }
 
-export const prettyEnum = (value:string) => value.replace(/([a-z])([A-Z])/g,"$1 $2");
-export const isPendingStatus = (status:string) => status === "Pending";
 export const money = (value:number) => `Rs ${value.toLocaleString("en-PK",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
 /**
@@ -201,19 +198,3 @@ export const commissionAdjustmentNote = (
 // One implementation, in lib/idempotency, because every screen that records money needs it — not
 // just commissions and rebates. Re-exported so this module keeps its existing callers.
 export { newIdempotencyKey as idempotencyKey } from "../../lib/idempotency";
-
-// Re-exported so this module's existing callers keep working. It lives in lib/financePeriods
-// because every finance screen that defaults a date needs it, not just commissions and rebates.
-export { pakistanToday } from "../../lib/financePeriods";
-
-// Shared dialog keyboard handler: Escape closes; Tab is trapped so focus cycles within the modal.
-// Kept in one place so both the booking panel and the settings page stay in sync.
-export function trapDialogKeys(e: KeyboardEvent<HTMLElement>, close: () => void) {
-  if (e.key === "Escape") { e.preventDefault(); close(); return; }
-  if (e.key !== "Tab") return;
-  const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(x => x.offsetParent !== null);
-  if (controls.length === 0) { e.preventDefault(); return; }
-  const first = controls[0], last = controls[controls.length - 1];
-  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-}

@@ -4,7 +4,7 @@ export type CommissionStatus = "Pending" | "Paid" | "Cancelled" | "ReversalRequi
 export type RebateStatus = "Pending" | "Applied" | "Paid" | "Cancelled" | "ReversalRequired" | "Reversed";
 export type RebateMethod = "OutstandingBalanceReduction" | "InstallmentAdjustment" | "CashOrBankPayment" | "CreditNote" | "Other";
 
-export interface PagedResult<T> { items:T[]; hasMore:boolean; }
+export interface PagedResult<T> { items:T[]; hasMore:boolean; totalCount?:number; }
 
 export interface CommissionRebateSummary {
   accruedCommission: number; payableCommission: number; commissionPaid: number;
@@ -23,15 +23,6 @@ export interface Attribution {
   id:number; partnerId:number; partnerName:string; leadId:number|null; customerId:number|null; bookingId:number|null;
   relationshipType:string; introducedAt:string|null; sourceDetails:string|null; notes:string|null;
   isPrimary:boolean; allocationPercent:number; assignedAt:string; concurrencyToken:string;
-}
-
-export interface CommissionRule {
-  id:number; name:string; description:string|null; isActive:boolean; effectiveFrom:string; effectiveTo:string|null;
-  partnerId:number|null; partnerName:string|null; partnerType:string|null; projectId:number|null; projectName:string|null;
-  unitCategory:string|null; bookingSource:string|null; bookingId:number|null; calculationType:CalculationType;
-  percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis; minimumCommission:number|null;
-  maximumCommission:number|null; priority:number; notes:string|null; concurrencyToken:string;
-  currentRevisionNumber:number;
 }
 
 export interface MoneyMovement {

@@ -15,7 +15,7 @@ namespace DAMS.Application.Interfaces
     {
         Task<CommissionRebateSummaryDto> GetSummaryAsync(CancellationToken cancellationToken = default);
         Task<PagedResult<ThirdPartyPartnerDto>> GetPartnersAsync(string? search, bool? isActive, int skip, int take,
-            CancellationToken cancellationToken = default);
+            bool includeTotal = false, CancellationToken cancellationToken = default);
         Task<ThirdPartyPartnerDto> CreatePartnerAsync(SaveThirdPartyPartnerDto dto, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default);
         Task<ThirdPartyPartnerDto> UpdatePartnerAsync(int id, SaveThirdPartyPartnerDto dto, FinancialWorkflowActor actor,
@@ -31,9 +31,9 @@ namespace DAMS.Application.Interfaces
         Task<CommissionRuleDto> UpdateRuleAsync(int id, SaveCommissionRuleDto dto, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default);
         Task<PagedResult<BookingCommissionDto>> GetCommissionsAsync(BookingCommissionStatus? status, int? partnerId,
-            int? projectId, int skip, int take, CancellationToken cancellationToken = default);
+            int? projectId, int skip, int take, bool includeTotal = false, CancellationToken cancellationToken = default);
         Task<PagedResult<CustomerRebateDto>> GetRebatesAsync(CustomerRebateStatus? status, int? projectId,
-            int skip, int take, CancellationToken cancellationToken = default);
+            int skip, int take, bool includeTotal = false, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> GetBookingWorkspaceAsync(int bookingId,
             CancellationToken cancellationToken = default);
         Task<PagedResult<FinancialAuditDto>> GetBookingAuditAsync(int bookingId, int? beforeId, int take,
