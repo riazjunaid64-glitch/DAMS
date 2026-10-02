@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../../../api/api.ts";
 import { financeApiError } from "../../../api/financeAttachments.ts";
 import ExpenseWhtFields from "../../../components/ExpenseWhtFields.tsx";
-import { DatePicker, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
+import { Button, DatePicker, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
 import { moneyRequest, useIdempotencyKeys } from "../../../lib/idempotency.ts";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
 import type { ExpenseCategory, VendorOption } from "../whtTypes.ts";
@@ -21,6 +21,10 @@ export function AssetPurchaseDialog({
   categories,
   vendors,
   lookupsLoading,
+  lookupError = null,
+  onRetryLookups,
+  assetLookupError = null,
+  onRetryAssetAccounts,
   onChange,
   onClose,
   onSaved,
@@ -35,6 +39,10 @@ export function AssetPurchaseDialog({
   categories: readonly ExpenseCategory[];
   vendors: readonly VendorOption[];
   lookupsLoading: boolean;
+  lookupError?: string | null;
+  onRetryLookups?: () => void;
+  assetLookupError?: string | null;
+  onRetryAssetAccounts?: () => void;
   onChange: (next: AssetPurchaseFormState) => void;
   onClose: () => void;
   onSaved: () => void;
@@ -123,6 +131,16 @@ export function AssetPurchaseDialog({
       primaryAction={{ label: "Save", onClick: () => void save(), disabled: !canSave, loading: saving }}
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {assetLookupError && (
+          <div className="md:col-span-2">
+            <Notice tone="red" role="alert" title={assetLookupError} action={onRetryAssetAccounts ? <Button variant="outline" onClick={onRetryAssetAccounts}>Try again</Button> : undefined} />
+          </div>
+        )}
+        {lookupError && (
+          <div className="md:col-span-2">
+            <Notice tone="red" role="alert" title={lookupError} action={onRetryLookups ? <Button variant="outline" onClick={onRetryLookups}>Try again</Button> : undefined} />
+          </div>
+        )}
         {error && <div className="md:col-span-2"><Notice tone="red" role="alert" title={error} /></div>}
         <TextField label="What was bought" required value={form.itemName} onChange={(event) => onChange({ ...form, itemName: event.target.value })} />
         <Dropdown

@@ -28,36 +28,57 @@ describe("pageAfterEmptyDelete", () => {
 });
 
 describe("usePagedList", () => {
-  it("replaces rows on desktop, resets to page 1 when the filter changes, and ignores a late answer", async () => {
+  it("keeps the current rows while a filter or page reloads, and ignores a late answer", async () => {
     const first = deferred<PagedListPage<{ id: string }>>();
+    const next = deferred<PagedListPage<{ id: string }>>();
+    const late = deferred<PagedListPage<{ id: string }>>();
     let key = "open";
-    const fetchPage = vi.fn((query: { page: number }) => {
+    const fetchPage = vi.fn(() => {
       if (key === "open") return first.promise;
-      return Promise.resolve({ items: [{ id: query.page === 1 ? "fresh" : "other" }], totalCount: 40, hasMore: true });
+      if (key === "closed") return next.promise;
+      return late.promise;
     });
     const { result, rerender } = renderHook(
       ({ queryKey }) => usePagedList({ queryKey, fetchPage, pageSize: 20 }),
       { initialProps: { queryKey: "open" } },
     );
-    await waitFor(() => expect(fetchPage).toHaveBeenCalled());
+    await act(async () => { first.resolve({ items: [{ id: "open-row" }], totalCount: 1, hasMore: false }); });
+    await waitFor(() => expect(result.current.rows).toEqual([{ id: "open-row" }]));
+
     key = "closed";
     rerender({ queryKey: "closed" });
-    expect(result.current.rows).toEqual([]);
+    expect(result.current.rows).toEqual([{ id: "open-row" }]);
+    expect(result.current.rowsKey).toBe("open");
     expect(result.current.loading).toBe(true);
-    await waitFor(() => expect(result.current.rows).toEqual([{ id: "fresh" }]));
     expect(result.current.page).toBe(1);
-    await act(async () => { first.resolve({ items: [{ id: "stale" }], totalCount: 1, hasMore: false }); });
-    expect(result.current.rows).toEqual([{ id: "fresh" }]);
 
-    fetchPage.mockImplementation((query: { page: number }) => Promise.resolve({
-      items: [{ id: query.page === 2 ? "page-2" : "fresh" }],
-      totalCount: 21,
-      hasMore: query.page === 1,
-    }));
+    key = "later";
+    rerender({ queryKey: "later" });
+    expect(result.current.rows).toEqual([{ id: "open-row" }]);
+    expect(result.current.loading).toBe(true);
+    await act(async () => { next.resolve({ items: [{ id: "stale" }], totalCount: 1, hasMore: false }); });
+    expect(result.current.rows).toEqual([{ id: "open-row" }]);
+    await act(async () => { late.resolve({ items: [{ id: "fresh" }], totalCount: 40, hasMore: true }); });
+    await waitFor(() => expect(result.current.rows).toEqual([{ id: "fresh" }]));
+    expect(result.current.rowsKey).toBe("later");
+
+    const page = deferred<PagedListPage<{ id: string }>>();
+    fetchPage.mockImplementation(() => page.promise);
     act(() => result.current.setPage(2));
+    expect(result.current.rows).toEqual([{ id: "fresh" }]);
+    expect(result.current.loading).toBe(true);
+    await act(async () => { page.resolve({ items: [{ id: "page-2" }], totalCount: 21, hasMore: false }); });
     await waitFor(() => expect(result.current.rows).toEqual([{ id: "page-2" }]));
     expect(result.current.pagination.page).toBe(2);
     expect(result.current.pagination.totalCount).toBe(21);
+
+    const again = deferred<PagedListPage<{ id: string }>>();
+    fetchPage.mockImplementation(() => again.promise);
+    act(() => result.current.reload());
+    expect(result.current.rows).toEqual([{ id: "page-2" }]);
+    expect(result.current.loading).toBe(true);
+    await act(async () => { again.resolve({ items: [{ id: "reloaded" }], totalCount: 21, hasMore: false }); });
+    await waitFor(() => expect(result.current.rows).toEqual([{ id: "reloaded" }]));
   });
 
   it("appends on a phone and steps back when a delete empties the last page", async () => {

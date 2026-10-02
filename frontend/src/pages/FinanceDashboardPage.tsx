@@ -57,6 +57,14 @@ const VIEW_PARAM: Record<FinanceView, string> = {
   overdue: "overdue",
 };
 
+const VIEWS: readonly FinanceView[] = ["revenue", "totalExpenses", "customerDeposits", "overdue"];
+
+/** The list query starts with the open card. Rows from the previous card keep that card's columns. */
+function viewInQueryKey(queryKey: string): FinanceView | null {
+  const head = queryKey.split("|")[0] as FinanceView;
+  return VIEWS.includes(head) ? head : null;
+}
+
 export default function FinanceDashboardPage({ user }: Props) {
   const access = pageAccess(user?.role, "finance");
   const allowed = access === "allow";
@@ -80,6 +88,9 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [payable, setPayable] = useState<number | null>(null);
+  const [revenueLookupError, setRevenueLookupError] = useState<string | null>(null);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [assetLookupError, setAssetLookupError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<FinanceAccountOption[]>([]);
   const [assetAccounts, setAssetAccounts] = useState<FinanceAccountOption[]>([]);
   const [assetAccountsLoading, setAssetAccountsLoading] = useState(false);
@@ -97,11 +108,15 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [moreOpen, setMoreOpen] = useState(false);
 
   const summaryRequest = useRef(0);
+  const payableRequest = useRef(0);
   const assetLoaded = useRef(false);
+  const assetFailed = useRef(false);
   const assetRequest = useRef<Promise<void> | null>(null);
   const revenueLoaded = useRef(false);
+  const revenueFailed = useRef(false);
   const revenueRequest = useRef<Promise<void> | null>(null);
   const lookupsLoaded = useRef(false);
+  const lookupsFailed = useRef(false);
   const lookupsRequest = useRef<Promise<void> | null>(null);
 
   const loadSummary = useCallback(async (signal?: AbortSignal) => {
@@ -142,10 +157,27 @@ export default function FinanceDashboardPage({ user }: Props) {
     fetchPage,
   });
 
-  const refresh = useCallback(() => {
+  const loadPayable = useCallback(async () => {
+    const ticket = ++payableRequest.current;
+    try {
+      const loaded = await payableSummary();
+      if (ticket !== payableRequest.current) return;
+      setPayable(loaded.outstandingPayable);
+    } catch {
+      if (ticket !== payableRequest.current) return;
+      setPayable(null);
+    }
+  }, []);
+
+  const refreshTotals = useCallback(() => {
     void loadSummary();
+    void loadPayable();
+  }, [loadSummary, loadPayable]);
+
+  const refresh = useCallback(() => {
+    refreshTotals();
     list.reload();
-  }, [loadSummary, list]);
+  }, [refreshTotals, list]);
 
   useEffect(() => {
     if (!allowed) return;
@@ -156,12 +188,8 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   useEffect(() => {
     if (!allowed) return;
-    let live = true;
-    payableSummary()
-      .then((summary) => { if (live) setPayable(summary.outstandingPayable); })
-      .catch(() => { if (live) setPayable(null); });
-    return () => { live = false; };
-  }, [allowed]);
+    void loadPayable();
+  }, [allowed, loadPayable]);
 
   useEffect(() => {
     if (!allowed) return;
@@ -184,19 +212,21 @@ export default function FinanceDashboardPage({ user }: Props) {
     return () => { live = false; };
   }, [allowed]);
 
-  const loadRevenueCategories = useCallback((): Promise<void> => {
-    if (revenueLoaded.current) return Promise.resolve();
+  const loadRevenueCategories = useCallback((force = false): Promise<void> => {
+    if (!force && (revenueLoaded.current || revenueFailed.current)) return Promise.resolve();
     if (revenueRequest.current) return revenueRequest.current;
     setRevenueCategoriesLoading(true);
+    setRevenueLookupError(null);
     const request = (async () => {
       try {
         const response = await api("/api/finance/revenue-categories?includeInactive=true");
-        if (response.ok) {
-          setRevenueCategories(await response.json());
-          revenueLoaded.current = true;
-        }
-      } catch {
-        /* The revenue form cannot save an unclassified entry. */
+        if (!response.ok) throw new Error(await financeApiError(response, "Revenue categories could not be loaded."));
+        setRevenueCategories(await response.json());
+        revenueLoaded.current = true;
+        revenueFailed.current = false;
+      } catch (caught) {
+        revenueFailed.current = true;
+        setRevenueLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Revenue categories could not be loaded.");
       } finally {
         revenueRequest.current = null;
         setRevenueCategoriesLoading(false);
@@ -206,19 +236,21 @@ export default function FinanceDashboardPage({ user }: Props) {
     return request;
   }, []);
 
-  const loadAssetAccounts = useCallback((): Promise<void> => {
-    if (assetLoaded.current) return Promise.resolve();
+  const loadAssetAccounts = useCallback((force = false): Promise<void> => {
+    if (!force && (assetLoaded.current || assetFailed.current)) return Promise.resolve();
     if (assetRequest.current) return assetRequest.current;
     setAssetAccountsLoading(true);
+    setAssetLookupError(null);
     const request = (async () => {
       try {
         const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
-        if (response.ok) {
-          setAssetAccounts(await response.json() as FinanceAccountOption[]);
-          assetLoaded.current = true;
-        }
-      } catch {
-        /* The purchase form shows its validation message if these cannot be loaded. */
+        if (!response.ok) throw new Error(await financeApiError(response, "Fixed asset accounts could not be loaded."));
+        setAssetAccounts(await response.json() as FinanceAccountOption[]);
+        assetLoaded.current = true;
+        assetFailed.current = false;
+      } catch (caught) {
+        assetFailed.current = true;
+        setAssetLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Fixed asset accounts could not be loaded.");
       } finally {
         assetRequest.current = null;
         setAssetAccountsLoading(false);
@@ -228,18 +260,21 @@ export default function FinanceDashboardPage({ user }: Props) {
     return request;
   }, []);
 
-  const loadLookups = useCallback((): Promise<void> => {
-    if (lookupsLoaded.current) return Promise.resolve();
+  const loadLookups = useCallback((force = false): Promise<void> => {
+    if (!force && (lookupsLoaded.current || lookupsFailed.current)) return Promise.resolve();
     if (lookupsRequest.current) return lookupsRequest.current;
     setLookupsLoading(true);
+    setLookupError(null);
     const request = (async () => {
       try {
         const [categories, vendorRows] = await Promise.all([listCategories(true), vendorOptions(true)]);
         setExpenseCategories(categories);
         setVendors(vendorRows);
         lookupsLoaded.current = true;
-      } catch {
-        /* The form keeps its validation if these cannot be loaded. */
+        lookupsFailed.current = false;
+      } catch (caught) {
+        lookupsFailed.current = true;
+        setLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Expense categories could not be loaded.");
       } finally {
         lookupsRequest.current = null;
         setLookupsLoading(false);
@@ -249,9 +284,30 @@ export default function FinanceDashboardPage({ user }: Props) {
     return request;
   }, []);
 
-  useEffect(() => { if (allowed && revenueForm) void loadRevenueCategories(); }, [allowed, revenueForm, loadRevenueCategories]);
-  useEffect(() => { if (allowed && assetForm) void loadAssetAccounts(); }, [allowed, assetForm, loadAssetAccounts]);
-  useEffect(() => { if (allowed && (expenseForm || assetForm)) void loadLookups(); }, [allowed, expenseForm, assetForm, loadLookups]);
+  const retryRevenueCategories = useCallback(() => {
+    revenueFailed.current = false;
+    revenueLoaded.current = false;
+    void loadRevenueCategories(true);
+  }, [loadRevenueCategories]);
+
+  const retryAssetAccounts = useCallback(() => {
+    assetFailed.current = false;
+    assetLoaded.current = false;
+    void loadAssetAccounts(true);
+  }, [loadAssetAccounts]);
+
+  const retryLookups = useCallback(() => {
+    lookupsFailed.current = false;
+    lookupsLoaded.current = false;
+    void loadLookups(true);
+  }, [loadLookups]);
+
+  const revenueOpen = revenueForm !== null;
+  const expenseOpen = expenseForm !== null;
+  const assetOpen = assetForm !== null;
+  useEffect(() => { if (allowed && revenueOpen) void loadRevenueCategories(); }, [allowed, revenueOpen, loadRevenueCategories]);
+  useEffect(() => { if (allowed && assetOpen) void loadAssetAccounts(); }, [allowed, assetOpen, loadAssetAccounts]);
+  useEffect(() => { if (allowed && (expenseOpen || assetOpen)) void loadLookups(); }, [allowed, expenseOpen, assetOpen, loadLookups]);
 
   const openFile = useCallback(async (kind: FinanceRecordKind, id: number, attachment: FinanceAttachmentInfo, download: boolean) => {
     try {
@@ -332,7 +388,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       }
       setPendingDelete(null);
       toast.success("Deleted");
-      void loadSummary();
+      refreshTotals();
       list.afterDelete();
     } catch {
       toast.error("This record could not be deleted. Check your connection and try again.");
@@ -344,7 +400,10 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const onFilter = (changes: FilterValues) => {
     if ("project" in changes) setProjectId(changes.project ?? "");
-    if ("account" in changes) setAccountFilter(changes.account ?? "");
+    if ("account" in changes) {
+      setAccountFilter(changes.account ?? "");
+      setSummaryLoading(true);
+    }
     if ("from" in changes) setFromDate(changes.from ?? "");
     if ("to" in changes) setToDate(changes.to ?? "");
   };
@@ -428,6 +487,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         accountSelected={accountSelected}
         onClearAccount={() => setAccountFilter("")}
         summary={summary}
+        summaryLoading={summaryLoading}
         showBalance={singleAccount}
         datesSet={!!fromDate || !!toDate}
       />
@@ -442,7 +502,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       )}
 
       <FinanceTable
-        view={shownView}
+        view={(list.loading && list.rows.length > 0 ? viewInQueryKey(list.rowsKey) : null) ?? shownView}
         rows={list.rows}
         loading={list.loading}
         busyKey={busyKey}
@@ -481,6 +541,8 @@ export default function FinanceDashboardPage({ user }: Props) {
           accounts={accounts}
           categories={revenueCategories}
           categoriesLoading={revenueCategoriesLoading}
+          lookupError={revenueLookupError}
+          onRetryLookups={retryRevenueCategories}
           onChange={setRevenueForm}
           onClose={() => setRevenueForm(null)}
           onSaved={refresh}
@@ -496,6 +558,8 @@ export default function FinanceDashboardPage({ user }: Props) {
           categories={expenseCategories}
           vendors={vendors}
           lookupsLoading={lookupsLoading}
+          lookupError={lookupError}
+          onRetryLookups={retryLookups}
           onChange={setExpenseForm}
           onClose={() => setExpenseForm(null)}
           onSaved={refresh}
@@ -513,6 +577,10 @@ export default function FinanceDashboardPage({ user }: Props) {
           categories={expenseCategories}
           vendors={vendors}
           lookupsLoading={lookupsLoading}
+          lookupError={lookupError}
+          onRetryLookups={retryLookups}
+          assetLookupError={assetLookupError}
+          onRetryAssetAccounts={retryAssetAccounts}
           onChange={setAssetForm}
           onClose={() => setAssetForm(null)}
           onSaved={refresh}

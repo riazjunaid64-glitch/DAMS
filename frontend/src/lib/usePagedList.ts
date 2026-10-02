@@ -47,6 +47,8 @@ export type UsePagedListResult<T> = {
   /** Refetches. If the current page is now empty and it is not the first, steps back one page. */
   afterDelete: () => void;
   reload: () => void;
+  /** The query the current rows belong to. It lags `queryKey` while a new filter is loading. */
+  rowsKey: string;
   hasMore: boolean;
   /** Props for the shared Pagination. */
   pagination: { page: number; onPageChange: (page: number) => void; totalCount?: number; pageSize: number };
@@ -76,9 +78,9 @@ export function pageAfterEmptyDelete(page: number, itemsOnPage: number): number 
  * Page number + filters, one request at a time.
  *
  * Desktop replaces the rows for the page. A phone appends. A filter change (a new `queryKey`)
- * goes back to page 1 and the rows for the previous key are withheld in that same render, so a
- * view switch never hands the new columns a row from the old one. Answers that arrive late are
- * ignored (`isCurrentRowsRequest`).
+ * goes back to page 1 but leaves the rows on screen, with `loading` set, until the new page
+ * arrives — the table shows its refreshing state instead of going blank. Answers that arrive
+ * late are ignored (`isCurrentRowsRequest`).
  */
 export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_SIZE }: UsePagedListOptions<T>): UsePagedListResult<T> {
   const isPhone = useIsPhone();
@@ -90,6 +92,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   const [activeKey, setActiveKey] = useState(queryKey);
   const [request, setRequest] = useState<Request>({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize });
   const [rows, setRows] = useState<T[]>([]);
+  const [rowsKey, setRowsKey] = useState(queryKey);
   const [total, setTotal] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -100,9 +103,6 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   if (activeKey !== queryKey) {
     setActiveKey(queryKey);
     setRequest({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize });
-    setRows([]);
-    setTotal(null);
-    setHasMore(false);
     setError(null);
     setLoading(true);
     setLoadingMore(false);
@@ -135,6 +135,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
           }
         }
         setRows((prev) => (append ? [...prev, ...items] : items));
+        setRowsKey(activeKey);
         setTotal(result.totalCount ?? null);
         setHasMore(Boolean(result.hasMore) || (result.totalCount != null && skip + items.length < result.totalCount));
         setError(null);
@@ -189,13 +190,11 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   }, []);
 
   const switching = activeKey !== queryKey;
-  const shownRows = switching ? [] : rows;
-  const shownTotal = switching ? null : total;
-  const loadMoreTotal = shownTotal != null ? shownTotal : hasMore ? shownRows.length + pageSize : shownRows.length;
+  const loadMoreTotal = total != null ? total : hasMore ? rows.length + pageSize : rows.length;
 
   return {
-    rows: shownRows,
-    total: shownTotal,
+    rows,
+    total,
     loading: switching || loading,
     loadingMore: switching ? false : loadingMore,
     error: switching ? null : error,
@@ -204,15 +203,16 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
     loadMore,
     afterDelete,
     reload,
+    rowsKey,
     hasMore,
     pagination: {
       page: request.page,
       onPageChange: setPage,
-      totalCount: shownTotal ?? undefined,
+      totalCount: total ?? undefined,
       pageSize,
     },
     loadMoreBar: {
-      shown: shownRows.length,
+      shown: rows.length,
       total: loadMoreTotal,
       onLoadMore: loadMore,
       loading: switching ? false : loadingMore,

@@ -53,6 +53,8 @@ export interface RevenueLine {
   accountHolderName: string | null;
   concurrencyToken: string | null;
   attachment: FinanceAttachmentInfo | null;
+  /** `${source}:${sortId}` from the server, so two sales on the same day do not share a key. */
+  rowId: string;
 }
 
 export interface ExpenseLine {

@@ -157,7 +157,8 @@ export function FinanceTable({
 function rowKey(view: FinanceView, row: FinanceRow): string {
   if (view === "revenue") {
     const item = row as RevenueLine;
-    return item.manualRevenueId != null ? `revenue-${item.manualRevenueId}` : `revenue-${item.date}-${item.source}-${item.amount}-${item.projectName}`;
+    return item.rowId
+      || (item.manualRevenueId != null ? `Manual Revenue:${item.manualRevenueId}` : `${item.source}:${item.reference || item.date}`);
   }
   if (view === "totalExpenses") {
     const item = row as CostLine;

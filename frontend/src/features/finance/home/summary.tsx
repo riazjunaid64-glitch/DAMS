@@ -65,6 +65,7 @@ export function FinanceNotices({
   accountSelected,
   onClearAccount,
   summary,
+  summaryLoading = false,
   showBalance,
   datesSet,
 }: {
@@ -74,11 +75,14 @@ export function FinanceNotices({
   accountSelected: boolean;
   onClearAccount: () => void;
   summary: FinancialSummary | null;
+  /** While a new account's summary is loading, the balance line must not keep the previous account. */
+  summaryLoading?: boolean;
   showBalance: boolean;
   datesSet: boolean;
 }) {
   const balance = summary?.accountCurrentBalance;
-  const balanceVisible = showBalance && summary != null && balance != null;
+  const balanceVisible = showBalance && (summaryLoading || (summary != null && balance != null));
+  const balanceState = summaryLoading ? "loading" : "ready";
   return (
     <div className="flex flex-col gap-3">
       {summaryError && (
@@ -100,12 +104,14 @@ export function FinanceNotices({
         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 md:gap-4">
           <StatCard
             label={datesSet ? "Current balance (to period end)" : "Current balance"}
-            value={<span className={balance < 0 ? "text-danger" : undefined}>{formatMoney(balance)}</span>}
+            state={balanceState}
+            value={balance == null ? "—" : <span className={balance < 0 ? "text-danger" : undefined}>{formatMoney(balance)}</span>}
           />
-          <StatCard label="Opening balance" value={formatMoney(summary.accountOpeningBalance ?? 0)} />
+          <StatCard label="Opening balance" state={balanceState} value={formatMoney(summary?.accountOpeningBalance ?? 0)} />
           <StatCard
             label={datesSet ? "Net movement (period)" : "Net movement"}
-            value={movementFigure(summary.accountNetMovement)}
+            state={balanceState}
+            value={movementFigure(summary?.accountNetMovement)}
           />
         </div>
       )}

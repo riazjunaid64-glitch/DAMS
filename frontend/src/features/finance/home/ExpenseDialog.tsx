@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../../../api/api.ts";
 import { financeApiError } from "../../../api/financeAttachments.ts";
 import ExpenseWhtFields from "../../../components/ExpenseWhtFields.tsx";
-import { DatePicker, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
+import { Button, DatePicker, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
 import { moneyRequest, useIdempotencyKeys } from "../../../lib/idempotency.ts";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
 import { emptyWht, type ExpenseCategory, type VendorOption } from "../whtTypes.ts";
@@ -18,6 +18,8 @@ export function ExpenseDialog({
   categories,
   vendors,
   lookupsLoading,
+  lookupError = null,
+  onRetryLookups,
   onChange,
   onClose,
   onSaved,
@@ -30,6 +32,8 @@ export function ExpenseDialog({
   categories: readonly ExpenseCategory[];
   vendors: readonly VendorOption[];
   lookupsLoading: boolean;
+  lookupError?: string | null;
+  onRetryLookups?: () => void;
   onChange: (next: ExpenseFormState) => void;
   onClose: () => void;
   onSaved: () => void;
@@ -124,6 +128,11 @@ export function ExpenseDialog({
       primaryAction={{ label: "Save", onClick: () => void save(), disabled: !canSave, loading: saving }}
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {lookupError && (
+          <div className="md:col-span-2">
+            <Notice tone="red" role="alert" title={lookupError} action={onRetryLookups ? <Button variant="outline" onClick={onRetryLookups}>Try again</Button> : undefined} />
+          </div>
+        )}
         {error && <div className="md:col-span-2"><Notice tone="red" role="alert" title={error} /></div>}
         <Dropdown
           className="md:col-span-2"

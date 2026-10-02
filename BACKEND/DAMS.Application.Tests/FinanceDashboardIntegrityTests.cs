@@ -513,6 +513,9 @@ public sealed class FinanceDashboardIntegrityTests
         Assert.Single(second.Items);
         Assert.False(second.HasMore);
         Assert.Equal(2, second.TotalCount);
+        Assert.StartsWith(first.Items[0].Source + ":", first.Items[0].RowId);
+        Assert.StartsWith(second.Items[0].Source + ":", second.Items[0].RowId);
+        Assert.NotEqual(first.Items[0].RowId, second.Items[0].RowId);
 
         var overdue = await service.GetOverduePageAsync(null, 0, 1);
         Assert.Single(overdue.Items);

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../components/ui/Toast.tsx";
 import type { User } from "../App.tsx";
+import { formatMoney } from "../features/finance/home/format.ts";
 import FinanceDashboardPage from "./FinanceDashboardPage.tsx";
 
 const calls: string[] = [];
@@ -42,6 +43,7 @@ const revenueRow = {
   reference: null,
   description: null,
   manualRevenueId: 9,
+  rowId: "Manual Revenue:9",
   financeAccountId: 3,
   financeAccountName: "HBL Current",
   accountHolderName: "Adeel Satti",
@@ -50,13 +52,24 @@ const revenueRow = {
 };
 
 let rows: unknown[] = [revenueRow];
+let payableCalls = 0;
+let categoryCalls = 0;
+let categoryStatus = 200;
 
 function respond(url: string, init?: RequestInit): { status?: number; body: unknown } {
   if (url.includes("/wht/settings")) {
     return { body: { financialYearStartMonth: 7, whtRatesConfirmedAt: null, whtRatesConfirmedByName: null, currentFinancialYear: "2026-27", concurrencyToken: "t" } };
   }
   if (url.includes("/payable-summary")) {
-    return { body: { outstandingPayable: 184350, withheldInPeriod: 0, depositedInPeriod: 0, openingPayable: 0, totalWithheldAllTime: 0, totalDepositedAllTime: 0, paymentCount: 0, vendorCount: 0, bySection: [] } };
+    payableCalls += 1;
+    return { body: { outstandingPayable: payableCalls === 1 ? 184350 : 90000, withheldInPeriod: 0, depositedInPeriod: 0, openingPayable: 0, totalWithheldAllTime: 0, totalDepositedAllTime: 0, paymentCount: 0, vendorCount: 0, bySection: [] } };
+  }
+  if (url.includes("revenue-categories")) {
+    categoryCalls += 1;
+    return { status: categoryStatus, body: categoryStatus === 200 ? [] : {} };
+  }
+  if (/\/expenses\/\d+/.test(url) && (init?.method ?? "GET") === "GET") {
+    return { body: { id: 7, concurrencyToken: "tok" } };
   }
   if (url.includes("/accounts/options")) {
     return { body: [{ id: 3, name: "Meezan Bank", type: 1, accountHolderName: "Adeel Satti", isActive: true }] };
@@ -98,6 +111,9 @@ function show(user: User | null = { userId: "1", role: "Admin", email: "a@b.c" }
 beforeEach(() => {
   calls.length = 0;
   rows = [revenueRow];
+  payableCalls = 0;
+  categoryCalls = 0;
+  categoryStatus = 200;
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: false,
     media: query,
@@ -117,7 +133,7 @@ describe("Finance home", () => {
     show();
     expect(await screen.findByRole("heading", { name: "Revenue" })).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: /Total expenses/ }));
-    expect(screen.getByRole("heading", { name: "Total expenses" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Total expenses" })).toBeTruthy();
   });
 
   it("hides customer deposits and overdue when an account is chosen", async () => {
@@ -145,6 +161,43 @@ describe("Finance home", () => {
     fireEvent.click(await screen.findByRole("option", { name: "Meezan Bank" }));
     expect(await screen.findByRole("button", { name: /Revenue on this account/ })).toBeTruthy();
     expect(screen.getByText("Account net movement").closest("div")?.textContent).toContain("Rs 12,500");
+  });
+
+  it("reloads the FBR notice after an expense that can change withholding tax is deleted", async () => {
+    rows = [{
+      date: "2026-09-26",
+      projectName: "Floria Heights",
+      label: "Salaries",
+      kind: "cost",
+      amount: 1240000,
+      expenseId: 7,
+      source: "expense",
+      sourceId: 7,
+      attachment: null,
+    }];
+    show();
+    expect(await screen.findByText(`Tax to deposit to FBR: ${formatMoney(184350)}`)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /Total expenses/ }));
+    expect(await screen.findByRole("heading", { name: "Total expenses" })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Delete this expense?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(await screen.findByText(`Tax to deposit to FBR: ${formatMoney(90000)}`)).toBeTruthy();
+  });
+
+  it("shows a lookup failure once and retries only when asked", async () => {
+    categoryStatus = 500;
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Add revenue" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add manual revenue" });
+    expect(await within(dialog).findByText(/Revenue categories could not be loaded/)).toBeTruthy();
+    expect(categoryCalls).toBe(1);
+    fireEvent.click(within(dialog).getByRole("combobox", { name: /Received in account/ }));
+    fireEvent.click(await screen.findByRole("option", { name: /Meezan Bank/ }));
+    expect(categoryCalls).toBe(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
+    await within(dialog).findByText(/Revenue categories could not be loaded/);
+    expect(categoryCalls).toBe(2);
   });
 
   it("shows the empty state for the selected filters", async () => {

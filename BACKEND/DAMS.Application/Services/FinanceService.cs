@@ -281,6 +281,7 @@ namespace DAMS.Application.Services
                 ProjectName = r.ProjectName ?? "General",
                 Amount = r.Amount,
                 Source = r.Source,
+                RowId = r.Source + ":" + r.SortId,
                 ManualRevenueId = r.ManualRevenueId,
                 RevenueType = r.RevenueType ?? string.Empty,
                 RevenueCategoryId = r.RevenueCategoryId,
