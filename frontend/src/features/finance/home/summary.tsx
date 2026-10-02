@@ -62,6 +62,8 @@ export function FinanceNotices({
   summaryError,
   onRetryTotals,
   payable,
+  payableError = null,
+  onRetryPayable,
   accountSelected,
   onClearAccount,
   summary,
@@ -72,6 +74,9 @@ export function FinanceNotices({
   summaryError: string | null;
   onRetryTotals: () => void;
   payable: number | null;
+  /** Set when the payable summary failed. A successful zero stays null here and hides the FBR notice. */
+  payableError?: string | null;
+  onRetryPayable?: () => void;
   accountSelected: boolean;
   onClearAccount: () => void;
   summary: FinancialSummary | null;
@@ -114,6 +119,14 @@ export function FinanceNotices({
             value={movementFigure(summary?.accountNetMovement)}
           />
         </div>
+      )}
+      {payableError && (
+        <Notice
+          tone="red"
+          role="alert"
+          title={payableError}
+          action={onRetryPayable ? <Button variant="outline" onClick={onRetryPayable}>Try again</Button> : undefined}
+        />
       )}
       {payable != null && payable > 0 && (
         <Notice

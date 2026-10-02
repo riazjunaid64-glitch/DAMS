@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../components/ui/Toast.tsx";
@@ -14,7 +14,7 @@ const calls: string[] = [];
 vi.mock("../api/api.ts", () => ({
   api: async (url: string, init?: RequestInit) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
-    if (url.includes("/dashboard") && dashboardGate) await dashboardGate;
+    if (/\/Finance\/summary(?:\?|$)/.test(url) && dashboardGate) await dashboardGate;
     const { status = 200, body } = respond(url, init);
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   },
@@ -56,6 +56,8 @@ const revenueRow = {
 
 let rows: unknown[] = [revenueRow];
 let payableCalls = 0;
+let payableStatus = 200;
+let payableAmount: number | null = null;
 let categoryCalls = 0;
 let categoryStatus = 200;
 let rowsCalls = 0;
@@ -71,7 +73,8 @@ function respond(url: string, init?: RequestInit): { status?: number; body: unkn
   }
   if (url.includes("/payable-summary")) {
     payableCalls += 1;
-    return { body: { outstandingPayable: payableCalls === 1 ? 184350 : 90000, withheldInPeriod: 0, depositedInPeriod: 0, openingPayable: 0, totalWithheldAllTime: 0, totalDepositedAllTime: 0, paymentCount: 0, vendorCount: 0, bySection: [] } };
+    if (payableStatus !== 200) return { status: payableStatus, body: {} };
+    return { body: { outstandingPayable: payableAmount ?? (payableCalls === 1 ? 184350 : 90000), withheldInPeriod: 0, depositedInPeriod: 0, openingPayable: 0, totalWithheldAllTime: 0, totalDepositedAllTime: 0, paymentCount: 0, vendorCount: 0, bySection: [] } };
   }
   if (url.includes("revenue-categories")) {
     categoryCalls += 1;
@@ -86,22 +89,18 @@ function respond(url: string, init?: RequestInit): { status?: number; body: unkn
     if (accountOptionsStatus !== 200) return { status: accountOptionsStatus, body: {} };
     return { body: [{ id: 3, name: "Meezan Bank", type: 1, accountHolderName: "Adeel Satti", isActive: true }] };
   }
-  if (url.includes("/dashboard")) {
+  if (/\/Finance\/summary(?:\?|$)/.test(url)) {
     const account = new URL(url, "http://local").searchParams.get("account");
     const namedAccount = Boolean(account) && account !== "unassigned";
     return {
       body: {
-        summary: {
-          ...summary,
-          accountFilterApplied: Boolean(account),
-          // A named account has a cash movement. Unassigned is not an account, so the server
-          // leaves the figure null — the card must not turn that into Rs 0.
-          accountNetMovement: namedAccount ? 12500 : null,
-          accountCurrentBalance: namedAccount ? 20000 : null,
-          accountOpeningBalance: namedAccount ? 7500 : null,
-        },
-        trend: [],
-        distribution: [],
+        ...summary,
+        accountFilterApplied: Boolean(account),
+        // A named account has a cash movement. Unassigned is not an account, so the server
+        // leaves the figure null — the card must not turn that into Rs 0.
+        accountNetMovement: namedAccount ? 12500 : null,
+        accountCurrentBalance: namedAccount ? 20000 : null,
+        accountOpeningBalance: namedAccount ? 7500 : null,
       },
     };
   }
@@ -144,6 +143,8 @@ beforeEach(() => {
   calls.length = 0;
   rows = [revenueRow];
   payableCalls = 0;
+  payableStatus = 200;
+  payableAmount = null;
   categoryCalls = 0;
   categoryStatus = 200;
   rowsCalls = 0;
@@ -167,6 +168,40 @@ afterEach(() => {
 });
 
 describe("Finance home", () => {
+  it("loads the cards from the summary endpoint", async () => {
+    show();
+    expect(await screen.findByRole("button", { name: /Total revenue/ })).toBeTruthy();
+    expect(calls.some((call) => call.includes("/api/Finance/summary"))).toBe(true);
+    expect(calls.some((call) => call.includes("/api/Finance/dashboard"))).toBe(false);
+  });
+
+  it("shows the tax to deposit notice when tax is payable", async () => {
+    show();
+    expect(await screen.findByText(`Tax to deposit to FBR: ${formatMoney(184350)}`)).toBeTruthy();
+    expect(screen.queryByText("Tax payable could not be loaded.")).toBeNull();
+  });
+
+  it("does not warn when no tax is payable", async () => {
+    payableAmount = 0;
+    show();
+    await screen.findByRole("heading", { name: "Revenue" });
+    await waitFor(() => expect(payableCalls).toBeGreaterThan(0));
+    expect(screen.queryByText(/Tax to deposit to FBR/)).toBeNull();
+    expect(screen.queryByText("Tax payable could not be loaded.")).toBeNull();
+  });
+
+  it("shows an error when the tax payable summary fails, and retries only when asked", async () => {
+    payableStatus = 500;
+    show();
+    expect(await screen.findByText("Tax payable could not be loaded.")).toBeTruthy();
+    expect(screen.queryByText(/Tax to deposit to FBR/)).toBeNull();
+    const first = payableCalls;
+    expect(first).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(payableCalls).toBe(first + 1));
+    expect(screen.getByText("Tax payable could not be loaded.")).toBeTruthy();
+  });
+
   it("switches the table when a card is chosen", async () => {
     show();
     expect(await screen.findByRole("heading", { name: "Revenue" })).toBeTruthy();

@@ -44,7 +44,7 @@ import type {
 import { listCategories, payableSummary, vendorOptions } from "../features/finance/whtApi.ts";
 import type { ExpenseCategory, VendorOption } from "../features/finance/whtTypes.ts";
 import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth.ts";
-import { fetchFinanceDashboard } from "../lib/financeChartData.ts";
+import { fetchFinanceSummary } from "../lib/financeChartData.ts";
 import { buildPeriodRange, pakistanToday } from "../lib/financePeriods.ts";
 import { usePagedList, type PagedListQuery } from "../lib/usePagedList.ts";
 
@@ -88,6 +88,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [payable, setPayable] = useState<number | null>(null);
+  const [payableError, setPayableError] = useState<string | null>(null);
   const [revenueLookupError, setRevenueLookupError] = useState<string | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [assetLookupError, setAssetLookupError] = useState<string | null>(null);
@@ -127,12 +128,12 @@ export default function FinanceDashboardPage({ user }: Props) {
     const ticket = ++summaryRequest.current;
     setSummaryLoading(true);
     try {
-      const loaded = await fetchFinanceDashboard<FinancialSummary>(
+      const loaded = await fetchFinanceSummary<FinancialSummary>(
         { projectId, from: fromDate, to: toDate, account: accountFilter },
         signal,
       );
       if (ticket !== summaryRequest.current) return;
-      setSummary(loaded.summary);
+      setSummary(loaded);
       setSummaryError(null);
     } catch {
       if (signal?.aborted || ticket !== summaryRequest.current) return;
@@ -167,9 +168,11 @@ export default function FinanceDashboardPage({ user }: Props) {
       const loaded = await payableSummary();
       if (ticket !== payableRequest.current) return;
       setPayable(loaded.outstandingPayable);
+      setPayableError(null);
     } catch {
       if (ticket !== payableRequest.current) return;
       setPayable(null);
+      setPayableError("Tax payable could not be loaded.");
     }
   }, []);
 
@@ -524,6 +527,8 @@ export default function FinanceDashboardPage({ user }: Props) {
         summaryError={summaryError}
         onRetryTotals={() => void loadSummary()}
         payable={payable}
+        payableError={payableError}
+        onRetryPayable={() => void loadPayable()}
         accountSelected={accountSelected}
         onClearAccount={() => onFilter({ account: "" })}
         summary={summary}
