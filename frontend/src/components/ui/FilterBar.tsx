@@ -2,15 +2,54 @@ import { useState, type ReactNode } from "react";
 import { BottomSheet } from "./BottomSheet.tsx";
 import { Button } from "./Button.tsx";
 import { cx } from "./cx.ts";
+import {
+  financeRangeError,
+  financialYearHint,
+  periodPresetForDates,
+  periodRangeFor,
+  periodSelectOptions,
+  type FinancialYearStatus,
+  type PeriodPreset,
+  type PeriodRange,
+} from "./dateRange.ts";
 import { Dropdown } from "./Dropdown.tsx";
 import { IconFilter, IconPlus } from "./icons.tsx";
 import { SearchBar } from "./SearchBar.tsx";
 import { DatePicker } from "./DatePicker.tsx";
+import { activeFilterCount, rangeId } from "./filterCount.ts";
 import type { Option } from "./types.ts";
+
+export type { FinancialYearStatus, PeriodPreset, PeriodRange };
 
 export type FilterDef =
   | { type: "select"; key: string; label: string; options: readonly Option[]; icon?: ReactNode; allLabel?: string }
-  | { type: "date"; key: string; label: string };
+  | { type: "date"; key: string; label: string; max?: string; required?: boolean }
+  | {
+      type: "dateRange";
+      fromKey: string;
+      toKey: string;
+      fromLabel?: string;
+      toLabel?: string;
+      /** Passed to both date pickers. A max of today blocks future dates. */
+      max?: string;
+      /** Passed to both date pickers. Required fields have no Clear button. */
+      required?: boolean;
+    }
+  | {
+      type: "period";
+      key: string;
+      label?: string;
+      /** The date range this period fills. Counted once with that range, not as a second filter. */
+      fromKey: string;
+      toKey: string;
+      /**
+       * Ranges the page supplies (see `buildPeriodRange`). "all" clears both dates. Year presets
+       * return an empty range until the financial year start is known.
+       */
+      rangeFor: (preset: Exclude<PeriodPreset, "custom">) => PeriodRange;
+      /** Year options stay disabled, with a hint, until this is "ready". */
+      financialYear?: FinancialYearStatus;
+    };
 
 export type FilterValues = Record<string, string>;
 
@@ -34,50 +73,248 @@ const withAll = (filter: Extract<FilterDef, { type: "select" }>): Option[] => [
   ...filter.options,
 ];
 
+type RangeDraft = { from: string; to: string };
+
+const controlClass = "min-w-0 max-w-[240px] flex-1 basis-0";
+
 /**
  * Search + filters for a list. Desktop: one line — search, compact dropdowns, date fields and a
- * Reset link. Phone: search, a filter button (gold dot while any filter is on) that opens a bottom
- * sheet with the same filters, and an optional "+" add button. One definition drives both.
+ * Reset link (only once a filter or the search has a value). Phone: search, a filter button (gold
+ * dot while any filter is on) that opens a bottom sheet with the same filters, and an optional
+ * "+" add button. One definition drives both.
+ *
+ * A `dateRange` is one filter: both dates or neither, applied only once the pair is valid. A
+ * `period` select can own that range.
  */
 export function FilterBar({ search, filters, values, onChange, onReset, onAdd, addLabel = "Add", className }: FilterBarProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [draft, setDraft] = useState<FilterValues>({});
-  const activeCount = filters.filter((filter) => values[filter.key]).length;
+  const [rangeDrafts, setRangeDrafts] = useState<Record<string, RangeDraft>>({});
+  const [sheetError, setSheetError] = useState<string | null>(null);
+  const rangeSignature = filters
+    .filter((filter): filter is Extract<FilterDef, { type: "dateRange" | "period" }> => filter.type === "dateRange" || filter.type === "period")
+    .map((filter) => `${filter.fromKey}=${values[filter.fromKey] ?? ""};${filter.toKey}=${values[filter.toKey] ?? ""}`)
+    .join("|");
+  const [seenSignature, setSeenSignature] = useState(rangeSignature);
+  if (seenSignature !== rangeSignature) {
+    setSeenSignature(rangeSignature);
+    setRangeDrafts((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const filter of filters) {
+        if (filter.type !== "dateRange" && filter.type !== "period") continue;
+        const id = rangeId(filter.fromKey, filter.toKey);
+        const pending = next[id];
+        if (!pending) continue;
+        const from = values[filter.fromKey] ?? "";
+        const to = values[filter.toKey] ?? "";
+        if ((pending.from === from && pending.to === to) || financeRangeError(from, to) === null) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }
+  const activeCount = activeFilterCount(filters, values);
   const active = activeCount > 0;
+  const showReset = active || Boolean(search?.value);
+
+  const shownRange = (fromKey: string, toKey: string, source: FilterValues): RangeDraft => {
+    const draftRange = rangeDrafts[rangeId(fromKey, toKey)];
+    if (draftRange) return draftRange;
+    return { from: source[fromKey] ?? "", to: source[toKey] ?? "" };
+  };
+
+  const desktopRangeError = (() => {
+    for (const filter of filters) {
+      if (filter.type !== "dateRange") continue;
+      const shown = shownRange(filter.fromKey, filter.toKey, values);
+      const message = financeRangeError(shown.from, shown.to);
+      if (message) return message;
+    }
+    return null;
+  })();
+
+  const yearHint = (() => {
+    for (const filter of filters) {
+      if (filter.type !== "period") continue;
+      const hint = financialYearHint(filter.financialYear ?? "ready");
+      if (hint && filter.financialYear && filter.financialYear !== "ready") return hint;
+    }
+    return null;
+  })();
+
+  const commitRange = (fromKey: string, toKey: string, next: RangeDraft) => {
+    const id = rangeId(fromKey, toKey);
+    const message = financeRangeError(next.from, next.to);
+    setRangeDrafts((current) => ({ ...current, [id]: next }));
+    if (message) return;
+    const appliedFrom = values[fromKey] ?? "";
+    const appliedTo = values[toKey] ?? "";
+    if (next.from === appliedFrom && next.to === appliedTo) {
+      setRangeDrafts((current) => {
+        if (!current[id]) return current;
+        const rest = { ...current };
+        delete rest[id];
+        return rest;
+      });
+      return;
+    }
+    onChange({ [fromKey]: next.from, [toKey]: next.to });
+  };
+
+  const applyPeriod = (filter: Extract<FilterDef, { type: "period" }>, preset: string) => {
+    const range = periodRangeFor(preset as PeriodPreset, filter.rangeFor);
+    if (!range) return;
+    setRangeDrafts((current) => ({ ...current, [rangeId(filter.fromKey, filter.toKey)]: range }));
+    if ((values[filter.fromKey] ?? "") === range.from && (values[filter.toKey] ?? "") === range.to) return;
+    onChange({ [filter.fromKey]: range.from, [filter.toKey]: range.to });
+  };
 
   const openSheet = () => {
-    setDraft(Object.fromEntries(filters.map((filter) => [filter.key, values[filter.key] ?? ""])));
+    const next: FilterValues = {};
+    for (const filter of filters) {
+      if (filter.type === "dateRange" || filter.type === "period") {
+        next[filter.fromKey] = values[filter.fromKey] ?? "";
+        next[filter.toKey] = values[filter.toKey] ?? "";
+      } else {
+        next[filter.key] = values[filter.key] ?? "";
+      }
+    }
+    setDraft(next);
+    setSheetError(null);
     setSheetOpen(true);
   };
+
   const apply = () => {
-    const changes = Object.fromEntries(Object.entries(draft).filter(([key, value]) => (values[key] ?? "") !== value));
+    for (const filter of filters) {
+      if (filter.type !== "dateRange") continue;
+      const message = financeRangeError(draft[filter.fromKey] ?? "", draft[filter.toKey] ?? "");
+      if (message) {
+        setSheetError(message);
+        return;
+      }
+    }
+    const changes: FilterValues = {};
+    const seen = new Set<string>();
+    for (const filter of filters) {
+      if (filter.type === "dateRange" || filter.type === "period") {
+        for (const key of [filter.fromKey, filter.toKey]) {
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const value = draft[key] ?? "";
+          if ((values[key] ?? "") !== value) changes[key] = value;
+        }
+      } else if ((values[filter.key] ?? "") !== (draft[filter.key] ?? "")) {
+        changes[filter.key] = draft[filter.key] ?? "";
+      }
+    }
     if (Object.keys(changes).length) onChange(changes);
     setSheetOpen(false);
   };
 
+  const sheetRangeError = (() => {
+    if (!sheetOpen) return null;
+    for (const filter of filters) {
+      if (filter.type !== "dateRange") continue;
+      const message = financeRangeError(draft[filter.fromKey] ?? "", draft[filter.toKey] ?? "");
+      if (message) return message;
+    }
+    return null;
+  })();
+
+  const renderPeriod = (filter: Extract<FilterDef, { type: "period" }>, source: FilterValues, onPreset: (preset: string) => void, size: "filter" | "form") => {
+    const status = filter.financialYear ?? "ready";
+    const preset = periodPresetForDates(source[filter.fromKey] ?? "", source[filter.toKey] ?? "", filter.rangeFor);
+    return (
+      <Dropdown
+        key={filter.key}
+        size={size}
+        label={filter.label ?? "Period"}
+        options={periodSelectOptions(filter.rangeFor, status)}
+        value={preset}
+        onChange={onPreset}
+        className={size === "filter" ? controlClass : undefined}
+      />
+    );
+  };
+
   return (
     <div className={cx("font-ui", className)}>
-      {/* Desktop */}
-      <div className="hidden flex-wrap items-center gap-2.5 md:flex">
-        {search && <SearchBar {...search} className="w-full max-w-[340px] flex-1" />}
-        {filters.map((filter) =>
-          filter.type === "select" ? (
-            <Dropdown
-              key={filter.key}
-              size="filter"
-              label={filter.label}
-              icon={filter.icon}
-              options={withAll(filter)}
-              value={values[filter.key] ?? ""}
-              onChange={(value) => onChange({ [filter.key]: value })}
-              className="w-auto max-w-[240px]"
-            />
-          ) : (
-            <DatePicker key={filter.key} size="filter" label={filter.label} value={values[filter.key] ?? ""} onChange={(value) => onChange({ [filter.key]: value })} />
-          ),
-        )}
-        <Button variant="link" onClick={onReset} className="ml-1">Reset</Button>
+      {/* Desktop. Filters shrink so five of them and Reset stay on one line at 1440. */}
+      <div className="hidden min-w-0 flex-nowrap items-center gap-2 md:flex">
+        {search && <SearchBar {...search} className="min-w-0 max-w-[340px] flex-1 basis-0" />}
+        {filters.map((filter) => {
+          if (filter.type === "select") {
+            return (
+              <Dropdown
+                key={filter.key}
+                size="filter"
+                label={filter.label}
+                icon={filter.icon}
+                options={withAll(filter)}
+                value={values[filter.key] ?? ""}
+                onChange={(value) => onChange({ [filter.key]: value })}
+                className={controlClass}
+              />
+            );
+          }
+          if (filter.type === "date") {
+            return (
+              <DatePicker
+                key={filter.key}
+                size="filter"
+                label={filter.label}
+                value={values[filter.key] ?? ""}
+                max={filter.max}
+                required={filter.required}
+                onChange={(value) => onChange({ [filter.key]: value })}
+                className={controlClass}
+              />
+            );
+          }
+          if (filter.type === "period") {
+            const shown = shownRange(filter.fromKey, filter.toKey, values);
+            return renderPeriod(
+              filter,
+              { ...values, [filter.fromKey]: shown.from, [filter.toKey]: shown.to },
+              (preset) => applyPeriod(filter, preset),
+              "filter",
+            );
+          }
+          const shown = shownRange(filter.fromKey, filter.toKey, values);
+          return (
+            <span key={rangeId(filter.fromKey, filter.toKey)} className="contents">
+              <DatePicker
+                size="filter"
+                label={filter.fromLabel ?? "From"}
+                value={shown.from}
+                max={filter.max}
+                required={filter.required}
+                onChange={(value) => commitRange(filter.fromKey, filter.toKey, { from: value, to: shown.to })}
+                className={controlClass}
+              />
+              <DatePicker
+                size="filter"
+                label={filter.toLabel ?? "To"}
+                value={shown.to}
+                max={filter.max}
+                required={filter.required}
+                onChange={(value) => commitRange(filter.fromKey, filter.toKey, { from: shown.from, to: value })}
+                className={controlClass}
+              />
+            </span>
+          );
+        })}
+        {showReset && <Button variant="link" onClick={onReset} className="ml-1 shrink-0">Reset</Button>}
       </div>
+      {(desktopRangeError || yearHint) && (
+        <div className="mt-2 hidden flex-col gap-1 md:flex">
+          {desktopRangeError && <p role="alert" className="m-0 text-small font-bold text-danger">{desktopRangeError}</p>}
+          {yearHint && <p className="m-0 text-small text-ink-muted">{yearHint}</p>}
+        </div>
+      )}
 
       {/* Phone */}
       <div className="flex items-center gap-2 md:hidden">
@@ -111,23 +348,66 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
         onReset={() => { onReset(); setSheetOpen(false); }}
       >
         <div className="flex flex-col gap-4">
-          {filters.map((filter) =>
-            filter.type === "select" ? (
-              <Dropdown
-                key={filter.key}
-                label={filter.label}
-                options={withAll(filter)}
-                value={draft[filter.key] ?? ""}
-                onChange={(value) => setDraft((current) => ({ ...current, [filter.key]: value }))}
-              />
-            ) : (
-              <DatePicker
-                key={filter.key}
-                label={filter.label}
-                value={draft[filter.key] ?? ""}
-                onChange={(value) => setDraft((current) => ({ ...current, [filter.key]: value }))}
-              />
-            ),
+          {filters.map((filter) => {
+            if (filter.type === "select") {
+              return (
+                <Dropdown
+                  key={filter.key}
+                  label={filter.label}
+                  options={withAll(filter)}
+                  value={draft[filter.key] ?? ""}
+                  onChange={(value) => setDraft((current) => ({ ...current, [filter.key]: value }))}
+                />
+              );
+            }
+            if (filter.type === "date") {
+              return (
+                <DatePicker
+                  key={filter.key}
+                  label={filter.label}
+                  value={draft[filter.key] ?? ""}
+                  max={filter.max}
+                  required={filter.required}
+                  onChange={(value) => setDraft((current) => ({ ...current, [filter.key]: value }))}
+                />
+              );
+            }
+            if (filter.type === "period") {
+              return (
+                <div key={filter.key} className="flex flex-col gap-1">
+                  {renderPeriod(filter, draft, (preset) => {
+                    const range = periodRangeFor(preset as PeriodPreset, filter.rangeFor);
+                    if (!range) return;
+                    setDraft((current) => ({ ...current, [filter.fromKey]: range.from, [filter.toKey]: range.to }));
+                    setSheetError(null);
+                  }, "form")}
+                  {filter.financialYear && filter.financialYear !== "ready" && (
+                    <p className="m-0 text-small text-ink-muted">{financialYearHint(filter.financialYear)}</p>
+                  )}
+                </div>
+              );
+            }
+            return (
+              <div key={rangeId(filter.fromKey, filter.toKey)} className="flex flex-col gap-4">
+                <DatePicker
+                  label={filter.fromLabel ?? "From"}
+                  value={draft[filter.fromKey] ?? ""}
+                  max={filter.max}
+                  required={filter.required}
+                  onChange={(value) => { setDraft((current) => ({ ...current, [filter.fromKey]: value })); setSheetError(null); }}
+                />
+                <DatePicker
+                  label={filter.toLabel ?? "To"}
+                  value={draft[filter.toKey] ?? ""}
+                  max={filter.max}
+                  required={filter.required}
+                  onChange={(value) => { setDraft((current) => ({ ...current, [filter.toKey]: value })); setSheetError(null); }}
+                />
+              </div>
+            );
+          })}
+          {(sheetError || sheetRangeError) && (
+            <p role="alert" className="m-0 text-small font-bold text-danger">{sheetError ?? sheetRangeError}</p>
           )}
         </div>
       </BottomSheet>

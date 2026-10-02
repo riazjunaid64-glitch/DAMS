@@ -1,4 +1,5 @@
 import { api } from "../api/api.ts";
+import { financeRangeError } from "../components/ui/dateRange.ts";
 
 /**
  * The Finance dashboard's data — cards, trend and revenue-by-project — in ONE request to
@@ -44,30 +45,10 @@ export interface FinanceDashboardFilters {
 }
 
 /**
- * Why a custom range is not usable yet, or null when it is.
- *
- * One end alone used to be accepted by the cards and quietly re-read as "all time" by the chart, and
- * a backwards range was quietly re-read as the financial year — so the screen answered two different
- * questions at once and said nothing about it. A date outside what the database can store, meanwhile,
- * reached the server and came back as a 500. All three are now refused, in the browser and again in
- * the controller — the browser only so the operator gets the specific message instead of a failed
- * request.
+ * The shared From/To check. It used to live here; filter bars use the same function so a range
+ * the dashboard would refuse is refused before it is sent, with the same words.
  */
-/** SQL Server's `datetime` floor, and the server's own lower bound. */
-const MIN_FILTER_DATE = "1753-01-01";
-/** One day short of the maximum representable date, because every query compares against To + 1 day. */
-const MAX_FILTER_DATE = "9999-12-30";
-
-export function financeRangeError(from: string, to: string): string | null {
-  if (!from && !to) return null;
-  if (!from || !to) return "Enter both a From and a To date, or clear them both.";
-  for (const [value, label] of [[from, "From date"], [to, "To date"]] as const) {
-    if (value < MIN_FILTER_DATE) return `${label} cannot be before 01 Jan 1753.`;
-    if (value > MAX_FILTER_DATE) return `${label} cannot be after 30 Dec 9999.`;
-  }
-  if (from > to) return "From date cannot be after To date.";
-  return null;
-}
+export { financeRangeError };
 
 export async function fetchFinanceDashboard<TSummary>(
   filters: FinanceDashboardFilters,

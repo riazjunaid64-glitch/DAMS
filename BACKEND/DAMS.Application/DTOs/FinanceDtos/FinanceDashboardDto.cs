@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DAMS.Application.DTOs.FinanceDtos
 {
     /// <summary>The 5 dashboard summary cards for the selected project + date range.</summary>
@@ -329,12 +331,41 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal Percent { get; set; }
     }
 
-    /// <summary>One page of rows for an infinite-scroll table.</summary>
+    /// <summary>
+    /// One page of rows. <see cref="TotalCount"/> is optional on purpose: vendors, finance
+    /// accounts, partners, rules, commissions and customer documents page with
+    /// <see cref="HasMore"/> and leave the total unset.
+    /// </summary>
     public class PagedResult<T>
     {
         public List<T> Items { get; set; } = new();
 
         /// <summary>True when more rows exist beyond this page.</summary>
         public bool HasMore { get; set; }
+
+        /// <summary>
+        /// How many rows match the same filters as this page, when the caller asked for a count.
+        /// Omitted from JSON while unset so existing clients keep seeing Items and HasMore only.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? TotalCount { get; set; }
+
+        /// <summary>
+        /// A count is worth a second query on the first page, or when the caller passes
+        /// <paramref name="includeTotal"/>. Later pages of a scroll stay on the take+1 read.
+        /// </summary>
+        public static bool IncludeTotal(int skip, bool includeTotal = false) => skip == 0 || includeTotal;
+
+        /// <summary>
+        /// Builds a page from a take+1 fetch. <see cref="HasMore"/> is always set from the extra
+        /// row. <paramref name="totalCount"/> is stored only when the service already counted it.
+        /// </summary>
+        public static PagedResult<T> Page(IReadOnlyList<T> fetchedTakePlusOne, int take, int? totalCount = null) =>
+            new()
+            {
+                Items = fetchedTakePlusOne.Take(take).ToList(),
+                HasMore = fetchedTakePlusOne.Count > take,
+                TotalCount = totalCount
+            };
     }
 }

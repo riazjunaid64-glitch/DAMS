@@ -265,7 +265,7 @@ export function Dropdown({
 
   if (isFilter) {
     return (
-      <div className={cx("relative min-w-[124px] font-ui", className)}>
+      <div className={cx("relative min-w-0 font-ui", className)}>
         {trigger}
         {list}
         {hidden}

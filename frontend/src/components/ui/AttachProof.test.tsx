@@ -126,4 +126,59 @@ describe("AttachProof", () => {
     fireEvent.change(input(), { target: { files: [ok] } });
     expect(onPick).toHaveBeenCalledWith(ok);
   });
+
+  it("shows a saved file with View, Download, Replace and Remove, and the full name on View", () => {
+    phone(true);
+    const onOpen = vi.fn();
+    const onDownload = vi.fn();
+    const name = "development-charges-receipt.pdf";
+    render(<AttachProof file={{ name, size: 220 * 1024, uploaded: true, onOpen, onDownload }} onPick={() => {}} onReplace={() => {}} />);
+    const title = screen.getByText(name);
+    expect(title.className).toContain("truncate");
+    expect(title.getAttribute("title")).toBe(name);
+    expect(screen.getByText("PDF · 220 KB")).toBeTruthy();
+    const view = screen.getByRole("button", { name: `View ${name}` });
+    expect(view.getAttribute("title")).toBe(name);
+    fireEvent.click(view);
+    expect(onOpen).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(onDownload).toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Replace" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" }).className).toContain("text-danger");
+    expect(screen.queryByRole("button", { name: "Remove file" })).toBeNull();
+  });
+
+  it("names a photo and keeps replace and remove from applying together", () => {
+    const events: string[] = [];
+    let replacement: File | null = null;
+    let pending = false;
+    const snapshot = () => {
+      events.push(`${replacement ? replacement.name : "none"}/${pending ? "remove" : "keep"}`);
+    };
+    render(
+      <AttachProof
+        file={{ name: "slip.jpg", size: Math.round(1.2 * 1024 * 1024), uploaded: true, onOpen: () => {}, onDownload: () => {} }}
+        onPick={() => {}}
+        onReplace={(file) => { replacement = file; snapshot(); }}
+        onPendingRemove={(next) => { pending = next; snapshot(); }}
+      />,
+    );
+    expect(screen.getByText("Photo · 1.2 MB")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.getByText("slip.jpg will be removed when you save.")).toBeTruthy();
+    expect(screen.queryByText("Will replace the saved file")).toBeNull();
+    const next = fileOf("new-proof.pdf", 4096);
+    fireEvent.change(input(), { target: { files: [next] } });
+    expect(screen.getByText("Will replace the saved file")).toBeTruthy();
+    expect(screen.getByText("PDF · 4 KB")).toBeTruthy();
+    expect(screen.queryByText(/will be removed when you save/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.getByText("slip.jpg will be removed when you save.")).toBeTruthy();
+    expect(screen.queryByText("Will replace the saved file")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(screen.getByText("Photo · 1.2 MB")).toBeTruthy();
+    expect(events.every((event) => !event.endsWith(".pdf/remove") && !event.endsWith(".jpg/remove"))).toBe(true);
+    expect(replacement).toBeNull();
+    expect(pending).toBe(false);
+  });
 });

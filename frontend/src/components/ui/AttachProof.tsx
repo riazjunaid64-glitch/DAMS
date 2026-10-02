@@ -2,7 +2,7 @@ import { useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { cx } from "./cx.ts";
 import { FieldShell } from "./FieldShell.tsx";
 import { IconClose, IconCheck, IconFile, IconImage, IconUpload } from "./icons.tsx";
-import { PROOF_RULE, fileRuleError, formatFileSize, isImageName, type FileRule } from "./proofFile.ts";
+import { PROOF_RULE, fileRuleError, formatFileSize, isImageName, proofFileDetail, type FileRule } from "./proofFile.ts";
 import { useIsPhone } from "./useMediaQuery.ts";
 
 export type AttachProofFile = {
@@ -12,6 +12,8 @@ export type AttachProofFile = {
   uploaded?: boolean;
   /** Makes the name a link that opens the file. */
   onOpen?: () => void;
+  /** Downloads the saved file. Together with `onReplace`, this turns on the saved-file card. */
+  onDownload?: () => void;
 };
 
 export type AttachProofProps = {
@@ -25,6 +27,16 @@ export type AttachProofProps = {
   file: AttachProofFile | null;
   /** A file that passed the type and size check. */
   onPick: (file: File) => void;
+  /**
+   * Saved-file card: a file chosen to replace the one already stored. `null` clears that choice
+   * (the user switched to Remove). The saved file stays until the page saves.
+   */
+  onReplace?: (file: File | null) => void;
+  /**
+   * Saved-file card: true while Remove is waiting for Save, false on Undo or when a replacement
+   * is picked. Never true at the same time as a replacement file.
+   */
+  onPendingRemove?: (pending: boolean) => void;
   /** The × on the file card: stops an upload or removes the file before saving. */
   onRemove?: () => void;
   /** 0–100 while the file is uploading; leave it out otherwise. */
@@ -37,6 +49,7 @@ export type AttachProofProps = {
 };
 
 const cardIcon = "flex size-10 shrink-0 items-center justify-center rounded-lg bg-gold-soft text-gold-text";
+const textButton = "min-h-11 cursor-pointer border-0 bg-transparent p-0 text-left text-small font-bold underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline md:min-h-0";
 
 /**
  * The one "Attach proof" upload field: a dashed drop zone (tap-to-upload on a phone), then a file
@@ -44,15 +57,25 @@ const cardIcon = "flex size-10 shrink-0 items-center justify-center rounded-lg b
  * and size are checked here, before anything is sent: PDF, image, Word or Excel, up to 15 MB by
  * default, or whatever a `rule` says (customer documents). A phone's own picker offers the camera, the gallery and files.
  */
-export function AttachProof({ label = "Proof", required = false, rule = PROOF_RULE, file, onPick, onRemove, progress, error, disabled = false, id, className }: AttachProofProps) {
+export function AttachProof({ label = "Proof", required = false, rule = PROOF_RULE, file, onPick, onReplace, onPendingRemove, onRemove, progress, error, disabled = false, id, className }: AttachProofProps) {
   const autoId = useId();
   const inputId = id ?? `ap-${autoId}`;
   const inputRef = useRef<HTMLInputElement>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [replacement, setReplacement] = useState<File | null>(null);
+  const [pendingRemove, setPendingRemove] = useState(false);
   const isPhone = useIsPhone();
   const problem = refusal ?? error ?? null;
   const uploading = file !== null && progress !== undefined && progress !== null;
+  const savedKey = file?.uploaded ? file.name : "";
+  const [seenSaved, setSeenSaved] = useState(savedKey);
+  if (seenSaved !== savedKey) {
+    setSeenSaved(savedKey);
+    setReplacement(null);
+    setPendingRemove(false);
+  }
+  const savedActions = Boolean(file?.uploaded && !uploading && file.onDownload && onReplace);
 
   const choose = (picked: File | undefined) => {
     if (!picked) return;
@@ -63,7 +86,26 @@ export function AttachProof({ label = "Proof", required = false, rule = PROOF_RU
       return;
     }
     setRefusal(null);
+    if (savedActions) {
+      setPendingRemove(false);
+      setReplacement(picked);
+      onPendingRemove?.(false);
+      onReplace?.(picked);
+    }
     onPick(picked);
+  };
+
+  const markRemove = () => {
+    setReplacement(null);
+    setPendingRemove(true);
+    setRefusal(null);
+    onReplace?.(null);
+    onPendingRemove?.(true);
+  };
+
+  const undoRemove = () => {
+    setPendingRemove(false);
+    onPendingRemove?.(false);
   };
 
   const onDragOver = (event: DragEvent<HTMLElement>) => {
@@ -100,7 +142,41 @@ export function AttachProof({ label = "Proof", required = false, rule = PROOF_RU
         tabIndex={-1}
         onChange={(event) => choose(event.target.files?.[0])}
       />
-      {file ? (
+      {file && pendingRemove && savedActions ? (
+        <div className="flex min-w-0 items-center justify-between gap-3 rounded-field border border-line-input bg-card px-3 py-2.5">
+          <p className="m-0 min-w-0 truncate text-small text-ink" title={`${file.name} will be removed when you save.`}>
+            {file.name} will be removed when you save.
+          </p>
+          <button type="button" disabled={disabled} onClick={undoRemove} className={cx(textButton, "shrink-0 text-gold-text")}>Undo</button>
+        </div>
+      ) : file && replacement && savedActions ? (
+        <div className="flex min-w-0 items-center gap-3 rounded-field border border-line-input bg-card p-2.5">
+          <span className={cardIcon}>{isImageName(replacement.name) ? <IconImage size={20} /> : <IconFile size={20} />}</span>
+          <div className="min-w-0 flex-1">
+            <p title={replacement.name} className="m-0 truncate text-body font-extrabold text-ink">{replacement.name}</p>
+            <p className="m-0 text-small text-ink-muted">{proofFileDetail(replacement.name, replacement.size)}</p>
+            <p className="m-0 text-small font-bold text-ink-2">Will replace the saved file</p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end">
+            <button type="button" disabled={disabled} onClick={() => inputRef.current?.click()} className={cx(textButton, "text-gold-text")}>Replace</button>
+            <button type="button" disabled={disabled} onClick={markRemove} className={cx(textButton, "text-danger")}>Remove</button>
+          </div>
+        </div>
+      ) : file && savedActions ? (
+        <div className="flex min-w-0 items-center gap-3 rounded-field border border-line-input bg-card p-2.5">
+          <span className={cardIcon}>{isImageName(file.name) ? <IconImage size={20} /> : <IconFile size={20} />}</span>
+          <div className="min-w-0 flex-1">
+            <p title={file.name} className="m-0 truncate text-body font-extrabold text-ink">{file.name}</p>
+            <p className="m-0 text-small text-ink-muted">{proofFileDetail(file.name, file.size)}</p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end">
+            <button type="button" disabled={disabled || !file.onOpen} title={file.name} aria-label={`View ${file.name}`} onClick={file.onOpen} className={cx(textButton, "text-gold-text")}>View</button>
+            <button type="button" disabled={disabled || !file.onDownload} onClick={file.onDownload} className={cx(textButton, "text-gold-text")}>Download</button>
+            <button type="button" disabled={disabled} onClick={() => inputRef.current?.click()} className={cx(textButton, "text-gold-text")}>Replace</button>
+            <button type="button" disabled={disabled} onClick={markRemove} className={cx(textButton, "text-danger")}>Remove</button>
+          </div>
+        </div>
+      ) : file ? (
         <div className="flex min-w-0 items-center gap-3 rounded-field border border-line-input bg-card p-2.5">
           <span className={cardIcon}>{isImageName(file.name) ? <IconImage size={20} /> : <IconFile size={20} />}</span>
           <div className="min-w-0 flex-1">
@@ -176,6 +252,7 @@ export function AttachProof({ label = "Proof", required = false, rule = PROOF_RU
           )}
         </button>
       )}
+      {savedActions && problem && <p role="alert" className="m-0 text-small font-bold text-danger">{problem}</p>}
     </FieldShell>
   );
 }

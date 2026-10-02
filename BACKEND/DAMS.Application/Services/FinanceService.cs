@@ -159,7 +159,10 @@ namespace DAMS.Application.Services
 
         // ── Paged table rows ────────────────────────────────────────────────────────
         // Each method fetches `take + 1` rows in SQL (OFFSET/FETCH) so HasMore is known
-        // without a separate COUNT query.
+        // from that extra row. TotalCount is optional on PagedResult: a later page ticket
+        // fills it with one COUNT under the same filters, and only when the caller asks
+        // (PagedResult.IncludeTotal — skip == 0 or includeTotal) so scrolling stays cheap.
+        // These finance home lists do not run that count yet.
 
         public async Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default)
         {
