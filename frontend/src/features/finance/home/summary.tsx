@@ -1,6 +1,6 @@
 import { Button, Notice, StatCard } from "../../../components/ui";
 import { formatMoney } from "./format.ts";
-import { TAX_TO_FBR_PATH } from "./links.tsx";
+import { TAX_TO_FBR_PATH } from "./paths.ts";
 import type { FinanceView, FinancialSummary } from "./types.ts";
 
 export function FinanceCards({

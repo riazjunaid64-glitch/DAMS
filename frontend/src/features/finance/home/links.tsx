@@ -9,14 +9,9 @@ import {
   IconUsers,
   IconWallet,
 } from "../../../components/ui/icons.tsx";
+import { TAX_TO_FBR_PATH } from "./paths.ts";
 
-/**
- * Tax to FBR opens Settings until KAN-95 registers `/finance/tax`.
- * Both links then share that route; the labels stay distinct.
- */
-export const TAX_TO_FBR_PATH = "/finance/settings";
-
-export const FINANCE_LINKS: { label: string; to: string; icon: ReactNode }[] = [
+const FINANCE_LINKS: { label: string; to: string; icon: ReactNode }[] = [
   { label: "Financial reports", to: "/finance/reports", icon: <IconFile size={18} /> },
   { label: "Capital partners", to: "/finance/partners", icon: <IconUsers size={18} /> },
   { label: "Loans", to: "/finance/loans", icon: <IconWallet size={18} /> },
