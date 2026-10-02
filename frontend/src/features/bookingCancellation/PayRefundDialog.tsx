@@ -3,7 +3,7 @@ import { Modal, NumberField, Notice, TextArea, useToast } from "../../components
 import { useIdempotencyKeys } from "../../lib/idempotency.ts";
 import { pakistanToday } from "../../lib/financePeriods.ts";
 import type { BookingDetail, FinanceAccountOption } from "../bookings/detailTypes.ts";
-import { DialogTitle } from "../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../components/ui/DialogTitle.tsx";
 import { useProofUpload } from "../proof/useProofUpload.ts";
 import { bookingCancellationApi } from "./api.ts";
 import { RefundPayoutFields } from "./RefundPayoutFields.tsx";

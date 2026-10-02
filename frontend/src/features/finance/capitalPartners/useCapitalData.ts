@@ -15,7 +15,8 @@ export function useCapitalData(enabled: boolean) {
   const [data, setData] = useState<Loaded>({ partners: [], cashAccounts: [], allAccounts: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [accountsError, setAccountsError] = useState<string | null>(null);
+  const [cashAccountsError, setCashAccountsError] = useState<string | null>(null);
+  const [capitalAccountsError, setCapitalAccountsError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -33,7 +34,9 @@ export function useCapitalData(enabled: boolean) {
       } else {
         setError(partners.reason instanceof Error ? partners.reason.message : "Partners could not be loaded.");
       }
-      setAccountsError(cash.status === "rejected" || all.status === "rejected" ? "The accounts could not be loaded." : null);
+      const failed = "The accounts could not be loaded.";
+      setCashAccountsError(cash.status === "rejected" ? failed : null);
+      setCapitalAccountsError(all.status === "rejected" ? failed : null);
       setLoading(false);
     });
     return () => controller.abort();
@@ -44,5 +47,5 @@ export function useCapitalData(enabled: boolean) {
     setAttempt((current) => current + 1);
   }, []);
 
-  return { ...data, loading, error, accountsError, reload };
+  return { ...data, loading, error, cashAccountsError, capitalAccountsError, reload };
 }

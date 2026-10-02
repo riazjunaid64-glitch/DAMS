@@ -123,3 +123,6 @@ export function statementSubtitle(partner: Pick<Partner, "profitSharePercent" | 
   const share = `${formatShare(partner.profitSharePercent)} share`;
   return !phone && partner.financeAccountName ? `${share} · ${partner.financeAccountName}` : share;
 }
+
+/** A single share must be between 0 and 100: the server refuses anything else, whatever the total. */
+export const shareInRange = (share: number): boolean => share >= 0 && share <= 100;

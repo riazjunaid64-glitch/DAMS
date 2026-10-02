@@ -1,8 +1,8 @@
 import { useId, useState, type FormEvent } from "react";
 import { Modal, Notice, NumberField, Toggle, useToast } from "../../../components/ui";
-import { DialogTitle } from "../../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { capitalApi } from "./api.ts";
-import { activeShareTotal, formatShare, sharesAddUp, toNumber } from "./rules.ts";
+import { activeShareTotal, formatShare, shareInRange, sharesAddUp, toNumber } from "./rules.ts";
 import type { Partner } from "./types.ts";
 
 type Row = { active: boolean; share: string };
@@ -28,7 +28,9 @@ export function EditSharesDialog({ partners, onClose, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const total = activeShareTotal(partners.map((partner) => ({ isActive: rows[partner.id]!.active, share: toNumber(rows[partner.id]!.share) })));
-  const valid = sharesAddUp(total);
+  // Every share counts, on or off: an out-of-range figure is refused by the server whatever the total.
+  const outOfRange = (id: number) => !shareInRange(toNumber(rows[id]!.share));
+  const valid = sharesAddUp(total) && !partners.some((partner) => outOfRange(partner.id));
   const change = (id: number, changes: Partial<Row>) => setRows((current) => ({ ...current, [id]: { ...current[id]!, ...changes } }));
 
   const submit = async (event: FormEvent) => {
@@ -83,6 +85,7 @@ export function EditSharesDialog({ partners, onClose, onSaved }: Props) {
                   decimals={4}
                   suffix="%"
                   disabled={saving || !row.active}
+                  error={outOfRange(partner.id) ? "0 to 100" : undefined}
                   value={row.share}
                   onChange={(share) => change(partner.id, { share })}
                   className="w-32 shrink-0 [&_input]:text-right"

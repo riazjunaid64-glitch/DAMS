@@ -55,6 +55,7 @@ describe("DataTable", () => {
     expect(scroller.style.maxHeight).toBe("46vh");
     expect(document.querySelector("thead")!.className).toContain("sticky");
     rerender(<DataTable columns={columns} rows={rows} rowKey={(row) => row.id} />);
+    expect(document.querySelector("thead")!.className).not.toContain("sticky");
     expect(document.querySelector("table")!.parentElement!.style.maxHeight).toBe("");
   });
 

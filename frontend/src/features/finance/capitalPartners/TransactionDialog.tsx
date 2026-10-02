@@ -2,7 +2,7 @@ import { useId, useState, type FormEvent } from "react";
 import { AttachProof, DatePicker, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
 import type { useIdempotencyKeys } from "../../../lib/idempotency.ts";
-import { DialogTitle } from "../../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { capitalApi } from "./api.ts";
 import { cashAccountLabel } from "./rules.ts";
 import type { AccountOption, CapitalTransactionType, Partner } from "./types.ts";

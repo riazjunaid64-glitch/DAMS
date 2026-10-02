@@ -4,7 +4,7 @@ import { useIdempotencyKeys } from "../../lib/idempotency.ts";
 import { formatPkr } from "../../utils/currency.ts";
 import { bookingApi } from "./bookingApi.ts";
 import type { BookingDetail, InstallmentSchedule } from "./detailTypes.ts";
-import { DialogTitle } from "./DialogTitle.tsx";
+import { DialogTitle } from "../../components/ui/DialogTitle.tsx";
 import { PLAN_FREQUENCIES, canSavePlan, planErrors, planFields, planFigures, type PlanErrors } from "./planForm.ts";
 
 type Props = {

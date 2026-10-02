@@ -101,13 +101,13 @@ export default function FinancePartnersPage({ user }: { user: User | null }) {
           partner={dialog.partner}
           partners={partners}
           accounts={data.allAccounts}
-          accountsError={data.accountsError}
+          accountsError={data.capitalAccountsError}
           onClose={close}
           onSaved={data.reload}
         />
       )}
       {dialog?.kind === "transaction" && (
-        <TransactionDialog partner={dialog.partner} cashAccounts={data.cashAccounts} accountsError={data.accountsError} keys={keys} onClose={close} onSaved={data.reload} />
+        <TransactionDialog partner={dialog.partner} cashAccounts={data.cashAccounts} accountsError={data.cashAccountsError} keys={keys} onClose={close} onSaved={data.reload} />
       )}
       {dialog?.kind === "statement" && <StatementDialog partner={dialog.partner} cashAccounts={data.cashAccounts} onClose={close} />}
     </div>

@@ -365,6 +365,17 @@ describe("Edit shares", () => {
     expect(dialog().getByText("90% of 100%")).toBeTruthy();
   });
 
+  it("refuses a single share above 100 even when the total is within tolerance, and does not call the API", async () => {
+    api.partners.mockResolvedValue([partner({ profitSharePercent: 100 })]);
+    await open();
+    expect(button("Save shares", dialog()).disabled).toBe(false);
+    type(share("Riaz Junaid"), "100.0001");
+    expect(dialog().getByText("0 to 100")).toBeTruthy();
+    expect(button("Save shares", dialog()).disabled).toBe(true);
+    fireEvent.submit(dialog().getByRole("textbox", { name: "Riaz Junaid share" }).closest("form")!);
+    expect(api.saveShares).not.toHaveBeenCalled();
+  });
+
   it("accepts a total within 0.01 of 100", async () => {
     await open();
     type(share("Imtiaz Raheem"), "14.99");
@@ -521,6 +532,15 @@ describe("Add partner and Edit partner", () => {
     expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
       "Select account", "Capital — Adeel Satti", "Capital — Ayub Satti", "Capital — Imtiaz Raheem", "Capital — Naveed Akhtar", "Capital — Retired (Inactive)",
     ]);
+  });
+
+  it("turns Save off while the Exited date is before the Joined date", async () => {
+    await openAdd();
+    type(field(/^Name/), "Naveed Akhtar");
+    pickDay(/Exited date/, "October 6, 2026");
+    expect(button("Save partner", dialog()).disabled).toBe(false);
+    pickDay(/Joined date/, "October 20, 2026");
+    expect(button("Save partner", dialog()).disabled).toBe(true);
   });
 
   it("sends the saved share, Active setting and token back on Edit", async () => {
@@ -772,10 +792,14 @@ describe("Add transaction", () => {
     expect(button("Close", dialog()).disabled).toBe(true);
   });
 
-  it("says why when the accounts could not be loaded", async () => {
-    api.accounts.mockRejectedValue(new Error("nope"));
+  it("says why when the cash accounts could not be loaded, but not when only the capital accounts failed", async () => {
+    api.accounts.mockImplementation(async (cashLikeOnly) => { if (cashLikeOnly) throw new Error("nope"); return allAccounts; });
     await open();
     expect(dialog().getByText("The accounts could not be loaded.")).toBeTruthy();
+    cleanup();
+    api.accounts.mockImplementation(async (cashLikeOnly) => { if (!cashLikeOnly) throw new Error("nope"); return cashAccounts; });
+    await open();
+    expect(dialog().queryByText("The accounts could not be loaded.")).toBeNull();
   });
 });
 

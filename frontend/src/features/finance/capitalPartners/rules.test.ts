@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   accountAndReference, activeShareTotal, capitalAccountChoices, formatShare, noteToShow, runningBalance, serverDay,
-  sharesAddUp, showDay, statementRangeError, statementSubtitle, toNumber, typeLabel,
+  shareInRange, sharesAddUp, showDay, statementRangeError, statementSubtitle, toNumber, typeLabel,
 } from "./rules.ts";
 import type { AccountOption, Partner, Transaction } from "./types.ts";
 
@@ -163,5 +163,14 @@ describe("capital account choices", () => {
 
   it("is empty when there is no Capital account at all", () => {
     expect(capitalAccountChoices([account({ id: 5, type: "Cash" })], [], null)).toEqual([]);
+  });
+});
+
+describe("single share range", () => {
+  it("allows 0 to 100 and nothing beyond", () => {
+    expect(shareInRange(0)).toBe(true);
+    expect(shareInRange(100)).toBe(true);
+    expect(shareInRange(100.0001)).toBe(false);
+    expect(shareInRange(-0.0001)).toBe(false);
   });
 });

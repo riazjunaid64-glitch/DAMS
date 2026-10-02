@@ -4,7 +4,7 @@ import { useIdempotencyKeys } from "../../lib/idempotency.ts";
 import { pakistanToday } from "../../lib/financePeriods.ts";
 import { formatPkr } from "../../utils/currency.ts";
 import type { BookingDetail, FinanceAccountOption } from "../bookings/detailTypes.ts";
-import { DialogTitle } from "../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../components/ui/DialogTitle.tsx";
 import { useProofUpload } from "../proof/useProofUpload.ts";
 import { bookingCancellationApi } from "./api.ts";
 import { RefundChoice } from "./RefundChoice.tsx";

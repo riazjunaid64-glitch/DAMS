@@ -3,7 +3,7 @@ import { Button, DataTable, DatePicker, EmptyState, Modal, Notice, useIsPhone, t
 import { cx } from "../../../components/ui/cx.ts";
 import { openAttachmentAt } from "../../../api/financeAttachments.ts";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
-import { DialogTitle } from "../../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { capitalApi } from "./api.ts";
 import { accountAndReference, formatShare, noteToShow, runningBalance, showDay, statementRangeError, statementSubtitle, typeLabel, type StatementLine } from "./rules.ts";
 import { formatRs } from "../whtTypes.ts";

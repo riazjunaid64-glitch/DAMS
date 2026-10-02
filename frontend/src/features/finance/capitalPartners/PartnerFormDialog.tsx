@@ -1,6 +1,6 @@
 import { useId, useMemo, useState, type FormEvent } from "react";
 import { DatePicker, Dropdown, Modal, Notice, TextField, useToast } from "../../../components/ui";
-import { DialogTitle } from "../../bookings/DialogTitle.tsx";
+import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { capitalApi } from "./api.ts";
 import { capitalAccountChoices, serverDay } from "./rules.ts";
 import type { AccountOption, Partner } from "./types.ts";
@@ -85,7 +85,7 @@ export function PartnerFormDialog({ partner, partners, accounts, accountsError, 
       size="md"
       phoneLayout="fullscreen"
       title={partner ? <DialogTitle title="Edit partner" subtitle={partner.name} /> : "Add partner"}
-      primaryAction={{ label: "Save partner", form: formId, loading: saving, disabled: !ready }}
+      primaryAction={{ label: "Save partner", form: formId, loading: saving, disabled: !ready || Boolean(exitError) }}
     >
       <form id={formId} noValidate onSubmit={(event) => void submit(event)} className="flex flex-col gap-4">
         {error && <Notice tone="red" role="alert" title={error} />}
@@ -104,7 +104,7 @@ export function PartnerFormDialog({ partner, partners, accounts, accountsError, 
           onChange={(financeAccountId) => set({ financeAccountId })}
           helper={noAccounts ? "Add a Capital account in Manage accounts first." : undefined}
         />
-        <div className={pair}>
+        <div className="grid grid-cols-2 gap-4">
           <DatePicker label={optional("Joined date")} disabled={saving} value={fields.joinedDate} onChange={(joinedDate) => set({ joinedDate })} />
           <DatePicker label={optional("Exited date")} disabled={saving} min={fields.joinedDate || undefined} error={exitError} value={fields.exitedDate} onChange={(exitedDate) => set({ exitedDate })} />
         </div>

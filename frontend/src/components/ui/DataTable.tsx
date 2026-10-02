@@ -147,7 +147,7 @@ export function DataTable<T>({
         <div className="overflow-x-auto" style={maxHeight ? { maxHeight } : undefined}>
           <table className="w-full border-collapse text-left" style={{ minWidth }}>
             {caption && <caption className="sr-only">{caption}</caption>}
-            <thead className="sticky top-0 z-[1] bg-table-head">
+            <thead className={cx("bg-table-head", maxHeight && "sticky top-0 z-[1]")}>
               <tr>
                 {columns.map((column) => (
                   <th
