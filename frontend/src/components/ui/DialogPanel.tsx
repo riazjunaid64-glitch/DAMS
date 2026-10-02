@@ -32,6 +32,8 @@ type DialogPanelProps = {
   onSecondary?: () => void;
   /** Replaces the generated footer. `null` removes it. */
   footer?: ReactNode;
+  /** Sits on the left of Cancel and the primary button. On a phone it stacks under them. */
+  footerLeading?: ReactNode;
   /** While true, Esc and backdrop taps are ignored (e.g. mid-save). */
   busy?: boolean;
 };
@@ -59,32 +61,55 @@ export function DialogPanel({
   secondaryLabel = "Cancel",
   onSecondary,
   footer,
+  footerLeading,
   busy = false,
 }: DialogPanelProps) {
   const titleId = useId();
   const close = busy ? () => {} : onClose;
   const buttonSize = splitFooter ? "lg" : "md";
-  const generatedFooter = (primaryAction || secondaryLabel) && (
-    <div className={cx("gap-3", splitFooter ? (primaryAction && secondaryLabel ? "grid grid-cols-2" : "grid") : "flex justify-end")}>
-      {secondaryLabel && (
-        <Button variant="outline" size={buttonSize} onClick={onSecondary ?? onClose} disabled={busy}>
-          {secondaryLabel}
-        </Button>
-      )}
-      {primaryAction && (
-        <Button
-          variant={primaryAction.variant ?? "primary"}
-          size={buttonSize}
-          onClick={primaryAction.onClick}
-          disabled={primaryAction.disabled}
-          loading={primaryAction.loading}
-          type={primaryAction.form ? "submit" : "button"}
-          form={primaryAction.form}
-        >
-          {primaryAction.label}
-        </Button>
-      )}
-    </div>
+  const secondaryButton = secondaryLabel && (
+    <Button variant="outline" size={buttonSize} onClick={onSecondary ?? onClose} disabled={busy}>
+      {secondaryLabel}
+    </Button>
+  );
+  const primaryButton = primaryAction && (
+    <Button
+      variant={primaryAction.variant ?? "primary"}
+      size={buttonSize}
+      onClick={primaryAction.onClick}
+      disabled={primaryAction.disabled}
+      loading={primaryAction.loading}
+      type={primaryAction.form ? "submit" : "button"}
+      form={primaryAction.form}
+    >
+      {primaryAction.label}
+    </Button>
+  );
+  const generatedFooter = (primaryAction || secondaryLabel || footerLeading) && (
+    footerLeading ? (
+      <div className={cx("gap-3", splitFooter ? "flex flex-col" : "flex items-center justify-between")}>
+        {splitFooter ? (
+          <>
+            {primaryButton}
+            {secondaryButton}
+            <div className="[&_button]:w-full">{footerLeading}</div>
+          </>
+        ) : (
+          <>
+            <div>{footerLeading}</div>
+            <div className="flex gap-3">
+              {secondaryButton}
+              {primaryButton}
+            </div>
+          </>
+        )}
+      </div>
+    ) : (
+      <div className={cx("gap-3", splitFooter ? (primaryAction && secondaryLabel ? "grid grid-cols-2" : "grid") : "flex justify-end")}>
+        {secondaryButton}
+        {primaryButton}
+      </div>
+    )
   );
   const footerContent = footer === undefined ? generatedFooter : footer;
 

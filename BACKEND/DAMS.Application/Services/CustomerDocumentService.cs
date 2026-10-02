@@ -1,6 +1,5 @@
 using System.Data;
 using System.Linq.Expressions;
-using System.Text.RegularExpressions;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.FinanceDtos;
@@ -41,7 +40,7 @@ namespace DAMS.Application.Services
                 OccurredAt = a.OccurredAt
             };
         private const int NotNeededReasonMaxLength = 500;
-        private const string OtherCategoryCode = "other";
+        public const string NameClashMessage = "A document with this name already exists.";
         private static readonly HashSet<string> SupportedTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             ".pdf", ".jpg", ".jpeg", ".png"
@@ -61,93 +60,182 @@ namespace DAMS.Application.Services
             _logger = logger;
         }
 
-        public async Task<List<CustomerDocumentCategoryDto>> GetCategoriesAsync(
-            bool includeInactive,
-            CancellationToken cancellationToken = default)
+        public async Task<DocumentSetupListDto> GetSetupAsync(CancellationToken cancellationToken = default)
         {
-            var query = _context.CustomerDocumentCategories.AsNoTracking().AsQueryable();
-            if (!includeInactive)
-                query = query.Where(c => c.IsActive);
-
-            var rows = await query
-                .OrderBy(c => c.DisplayOrder).ThenBy(c => c.Name)
-                .Select(c => new
+            var documents = await _context.CustomerDocumentCategories.AsNoTracking()
+                .Where(c => !c.IsHidden && !c.IsOther)
+                .OrderBy(c => c.Id)
+                .Select(c => new DocumentSetupItemDto
                 {
-                    Category = c,
-                    UsageCount = c.Requirements.Count,
+                    Id = c.Id,
+                    Name = c.Name,
+                    AsksEveryCustomer = c.AsksEveryCustomer
                 })
                 .ToListAsync(cancellationToken);
-
-            return rows.Select(row => new CustomerDocumentCategoryDto
+            var nonBlocked = await _context.Customers.AsNoTracking()
+                .CountAsync(c => c.Status != CustomerStatus.Blocked, cancellationToken);
+            return new DocumentSetupListDto
             {
-                Id = row.Category.Id,
-                Name = row.Category.Name,
-                Code = row.Category.Code,
-                Description = row.Category.Description,
-                IsRequiredByDefault = row.Category.IsRequiredByDefault,
-                DisplayOrder = row.Category.DisplayOrder,
-                IsActive = row.Category.IsActive,
-                AssignToNewCustomers = row.Category.AssignToNewCustomers,
-                UsageCount = row.UsageCount,
-                CreatedAt = row.Category.CreatedAt,
-                UpdatedAt = row.Category.UpdatedAt,
-                ConcurrencyToken = Convert.ToBase64String(row.Category.RowVersion)
-            }).ToList();
+                NonBlockedCustomerCount = nonBlocked,
+                Documents = documents
+            };
         }
 
-        public async Task<CustomerDocumentCategoryDto> CreateCategoryAsync(
-            CreateCustomerDocumentCategoryDto dto,
+        public async Task<DocumentSetupItemDto> CreateDocumentAsync(
+            SaveDocumentNameDto dto,
             CustomerDocumentActor actor,
             CancellationToken cancellationToken = default)
         {
-            var values = ValidateCategory(dto.Name, dto.Code, dto.Description);
-
-            if (await _context.CustomerDocumentCategories.AnyAsync(c => c.Code == values.Code, cancellationToken))
-                throw new InvalidOperationException($"A document category with code '{values.Code}' already exists.");
-
-            ValidateAssignment(dto.AssignmentMode, dto.SelectedCustomerIds);
+            var name = CleanRequired(dto.Name, 150, "Name");
+            await EnsureUniqueNameAsync(name, null, cancellationToken);
             var now = DateTime.UtcNow;
-            var attempt = 0;
-            CustomerDocumentCategory category = null!;
+            var category = new CustomerDocumentCategory
+            {
+                Name = name,
+                AsksEveryCustomer = false,
+                CreatedByUserId = actor.UserId,
+                CreatedByName = actor.DisplayName,
+                CreatedAt = now
+            };
+            _context.CustomerDocumentCategories.Add(category);
+            // The audit is not tied to the row. Deleting an unused document must not rewrite history,
+            // and a category foreign key would be set null on that delete.
+            RecordAudit(CustomerDocumentAction.CategoryCreated, actor,
+                notes: $"Document '{name}' created. It is not asked until the switch is turned on.");
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            {
+                throw new CustomerDocumentConflictException(NameClashMessage, ex);
+            }
+            return ToSetupItem(category);
+        }
 
+        public async Task<DocumentSetupItemDto> RenameDocumentAsync(
+            int id,
+            SaveDocumentNameDto dto,
+            CustomerDocumentActor actor,
+            CancellationToken cancellationToken = default)
+        {
+            var name = CleanRequired(dto.Name, 150, "Name");
             await ExecuteResilientlyAsync(async () =>
             {
-                // Each attempt starts clean and builds its own row. A retry cannot reuse the previous
-                // attempt's entity: that insert was rolled back with its transaction, but EF still
-                // holds the key it had been given, so re-saving it would try to insert an explicit
-                // identity value. Rebuilding is also what keeps the audit entry one-per-row.
-                if (attempt++ > 0) _context.ChangeTracker.Clear();
-                category = new CustomerDocumentCategory
-                {
-                    Name = values.Name,
-                    Code = values.Code,
-                    Description = values.Description,
-                    IsRequiredByDefault = dto.IsRequiredByDefault,
-                    DisplayOrder = dto.DisplayOrder,
-                    IsActive = true,
-                    AssignToNewCustomers = dto.AssignmentMode == CustomerDocumentAssignmentMode.NewCustomersOnly,
-                    CreatedByUserId = actor.UserId,
-                    CreatedByName = actor.DisplayName,
-                    CreatedAt = now
-                };
+                _context.ChangeTracker.Clear();
+                var category = await EditableCategoryAsync(id, cancellationToken);
+                if (string.Equals(category.Name, name, StringComparison.Ordinal))
+                    return;
+
+                await EnsureUniqueNameAsync(name, id, cancellationToken);
+                var previous = category.Name;
+                category.Name = name;
+                category.UpdatedAt = DateTime.UtcNow;
                 await using var transaction = await BeginSerializableAsync(cancellationToken);
                 try
                 {
-                    _context.CustomerDocumentCategories.Add(category);
-                    RecordAudit(CustomerDocumentAction.CategoryCreated, actor, category: category,
-                        notes: $"Category '{category.Name}' created with assignment mode {dto.AssignmentMode}.");
-                    await _context.SaveChangesAsync(cancellationToken);
-
-                    if (dto.AssignmentMode is CustomerDocumentAssignmentMode.AllActiveCustomers
-                        or CustomerDocumentAssignmentMode.SelectedCustomers)
+                    var afterId = 0;
+                    while (true)
                     {
-                        await AssignCategoryAsync(category.Id, new AssignCustomerDocumentCategoryDto
-                        {
-                            AssignmentMode = dto.AssignmentMode,
-                            SelectedCustomerIds = dto.SelectedCustomerIds
-                        }, actor, cancellationToken);
+                        var copies = await _context.CustomerDocumentRequirements
+                            .Where(r => r.CategoryId == id && r.Id > afterId)
+                            .OrderBy(r => r.Id)
+                            .Take(AssignmentBatchSize)
+                            .ToListAsync(cancellationToken);
+                        if (copies.Count == 0)
+                            break;
+                        afterId = copies[^1].Id;
+                        foreach (var copy in copies)
+                            copy.Name = name;
+                        await _context.SaveChangesAsync(cancellationToken);
                     }
+                    RecordAudit(CustomerDocumentAction.CategoryUpdated, actor, category: category,
+                        notes: $"Name: {previous} → {name}");
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                }
+                catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+                {
+                    if (transaction != null)
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    throw new CustomerDocumentConflictException(NameClashMessage, ex);
+                }
+                catch
+                {
+                    if (transaction != null)
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            });
 
+            var saved = await _context.CustomerDocumentCategories.AsNoTracking()
+                .SingleAsync(c => c.Id == id, cancellationToken);
+            return ToSetupItem(saved);
+        }
+
+        public async Task RemoveDocumentAsync(
+            int id,
+            CustomerDocumentActor actor,
+            CancellationToken cancellationToken = default)
+        {
+            await ExecuteResilientlyAsync(async () =>
+            {
+                _context.ChangeTracker.Clear();
+                var category = await EditableCategoryAsync(id, cancellationToken);
+                var used = await _context.CustomerDocumentRequirements
+                    .AnyAsync(r => r.CategoryId == id, cancellationToken);
+                if (!used)
+                {
+                    var description = $"Unused document '{category.Name}' deleted.";
+                    _context.CustomerDocumentCategories.Remove(category);
+                    RecordAudit(CustomerDocumentAction.CategoryDeleted, actor, notes: description);
+                    await _context.SaveChangesAsync(cancellationToken);
+                    return;
+                }
+
+                // Hide, withdraw every batch, and the audit commit together. A later batch must not
+                // leave the document hidden, or a retry is rejected and the remaining copies stay visible.
+                await using var transaction = await BeginSerializableAsync(cancellationToken);
+                try
+                {
+                    category.IsHidden = true;
+                    category.AsksEveryCustomer = false;
+                    category.UpdatedAt = DateTime.UtcNow;
+                    await WithdrawCopiesWithoutFilesAsync(category, actor,
+                        "Removed. Customers who already have a file keep it.", cancellationToken);
+                    RecordAudit(CustomerDocumentAction.CategoryDeactivated, actor, category: category,
+                        notes: $"Document '{category.Name}' removed. Customers who already have a file keep it.");
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    if (transaction != null)
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            });
+        }
+
+        public async Task<DocumentSetupItemDto> SetAsksEveryCustomerAsync(
+            int id,
+            bool asksEveryCustomer,
+            CustomerDocumentActor actor,
+            CancellationToken cancellationToken = default)
+        {
+            await ExecuteResilientlyAsync(async () =>
+            {
+                _context.ChangeTracker.Clear();
+                var category = await EditableCategoryAsync(id, cancellationToken);
+                await using var transaction = await BeginSerializableAsync(cancellationToken);
+                try
+                {
+                    if (asksEveryCustomer)
+                        await AskEveryoneAsync(category, actor, cancellationToken);
+                    else
+                        await StopAskingAsync(category, actor, cancellationToken);
                     if (transaction != null)
                         await transaction.CommitAsync(cancellationToken);
                 }
@@ -159,159 +247,11 @@ namespace DAMS.Application.Services
                 }
             });
 
-            return await LoadCategoryAsync(category.Id, cancellationToken);
+            var saved = await _context.CustomerDocumentCategories.AsNoTracking()
+                .SingleAsync(c => c.Id == id, cancellationToken);
+            return ToSetupItem(saved);
         }
 
-        public async Task<CustomerDocumentCategoryDto> UpdateCategoryAsync(
-            int id,
-            UpdateCustomerDocumentCategoryDto dto,
-            CustomerDocumentActor actor,
-            CancellationToken cancellationToken = default)
-        {
-            var category = await _context.CustomerDocumentCategories
-                .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
-                ?? throw new KeyNotFoundException("Document category not found.");
-            ApplyConcurrencyToken(category, dto.ConcurrencyToken);
-
-            var values = ValidateCategory(dto.Name, dto.Code, dto.Description);
-            var used = await _context.CustomerDocumentRequirements.AnyAsync(r => r.CategoryId == id, cancellationToken);
-            if (used && !string.Equals(category.Code, values.Code, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("A category code cannot change after the category has been assigned.");
-            if (await _context.CustomerDocumentCategories.AnyAsync(c => c.Id != id && c.Code == values.Code, cancellationToken))
-                throw new InvalidOperationException($"A document category with code '{values.Code}' already exists.");
-
-            var wasActive = category.IsActive;
-            // Snapshot the checklist-policy fields before the overwrite so the audit records exactly
-            // which control values changed; a bare "updated" note is not reconstructable.
-            var before = CategorySnapshot(category);
-            category.Name = values.Name;
-            category.Code = values.Code;
-            category.Description = values.Description;
-            category.IsRequiredByDefault = dto.IsRequiredByDefault;
-            category.DisplayOrder = dto.DisplayOrder;
-            category.IsActive = dto.IsActive;
-            category.AssignToNewCustomers = dto.IsActive && dto.AssignToNewCustomers;
-            category.UpdatedAt = DateTime.UtcNow;
-            var changeSummary = DiffSnapshots(before, CategorySnapshot(category));
-
-            var action = wasActive == category.IsActive
-                ? CustomerDocumentAction.CategoryUpdated
-                : category.IsActive ? CustomerDocumentAction.CategoryActivated : CustomerDocumentAction.CategoryDeactivated;
-            RecordAudit(action, actor, category: category, notes: $"Category '{category.Name}' updated. {changeSummary}");
-
-            await SaveWithConcurrencyMessageAsync(cancellationToken);
-            return await LoadCategoryAsync(category.Id, cancellationToken);
-        }
-
-        public async Task DeleteCategoryAsync(
-            int id,
-            CustomerDocumentActor actor,
-            CancellationToken cancellationToken = default)
-        {
-            var category = await _context.CustomerDocumentCategories
-                .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
-                ?? throw new KeyNotFoundException("Document category not found.");
-
-            if (await _context.CustomerDocumentRequirements.AnyAsync(r => r.CategoryId == id, cancellationToken))
-                throw new InvalidOperationException("A used category cannot be deleted. Make it inactive instead.");
-
-            var description = $"Unused category '{category.Name}' ({category.Code}) deleted.";
-            _context.CustomerDocumentCategories.Remove(category);
-            RecordAudit(CustomerDocumentAction.CategoryDeleted, actor, notes: description);
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-
-        public async Task<CustomerDocumentAssignmentResultDto> AssignCategoryAsync(
-            int id,
-            AssignCustomerDocumentCategoryDto dto,
-            CustomerDocumentActor actor,
-            CancellationToken cancellationToken = default)
-        {
-            ValidateAssignment(dto.AssignmentMode, dto.SelectedCustomerIds);
-            var category = await _context.CustomerDocumentCategories
-                .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
-                ?? throw new KeyNotFoundException("Document category not found.");
-
-            if (!category.IsActive)
-                throw new InvalidOperationException("An inactive category cannot be assigned to customers.");
-
-            if (dto.AssignmentMode is CustomerDocumentAssignmentMode.NewCustomersOnly
-                or CustomerDocumentAssignmentMode.None)
-            {
-                category.AssignToNewCustomers = dto.AssignmentMode == CustomerDocumentAssignmentMode.NewCustomersOnly;
-                category.UpdatedAt = DateTime.UtcNow;
-                RecordAudit(CustomerDocumentAction.BulkCategoryAssignment, actor, category: category,
-                    notes: category.AssignToNewCustomers
-                        ? "Category will be assigned to new customers only."
-                        : "Automatic assignment disabled.");
-                await _context.SaveChangesAsync(cancellationToken);
-                return new CustomerDocumentAssignmentResultDto();
-            }
-
-            // The four choices are deliberately exclusive: assigning an existing population
-            // does not silently opt future customers into the category.
-            category.AssignToNewCustomers = false;
-
-            CustomerDocumentAssignmentResultDto result = null!;
-            await ExecuteResilientlyAsync(async () =>
-            {
-                // Rebuilt on each attempt: the counters below accumulate as batches are assigned, so
-                // a retry must start its tally from zero rather than add to a half-finished one.
-                result = new CustomerDocumentAssignmentResultDto();
-                await using var transaction = await BeginSerializableAsync(cancellationToken);
-                try
-                {
-                    if (dto.AssignmentMode == CustomerDocumentAssignmentMode.AllActiveCustomers)
-                    {
-                        result.EligibleCustomers = await _context.Customers
-                            .CountAsync(c => c.Status == CustomerStatus.Active, cancellationToken);
-
-                        var afterId = 0;
-                        while (true)
-                        {
-                            var customers = await _context.Customers
-                                .Where(c => c.Status == CustomerStatus.Active && c.Id > afterId)
-                                .OrderBy(c => c.Id)
-                                .Take(AssignmentBatchSize)
-                                .ToListAsync(cancellationToken);
-                            if (customers.Count == 0)
-                                break;
-                            afterId = customers[^1].Id;
-                            result.AssignedCustomers += await AssignBatchAsync(category, customers, actor, cancellationToken);
-                        }
-                    }
-                    else
-                    {
-                        var selected = dto.SelectedCustomerIds.Distinct().ToArray();
-                        foreach (var ids in selected.Chunk(AssignmentBatchSize))
-                        {
-                            var customers = await _context.Customers
-                                .Where(c => ids.Contains(c.Id))
-                                .OrderBy(c => c.Id)
-                                .ToListAsync(cancellationToken);
-                            result.EligibleCustomers += customers.Count;
-                            result.AssignedCustomers += await AssignBatchAsync(category, customers, actor, cancellationToken);
-                        }
-                    }
-
-                    result.AlreadyAssignedCustomers = result.EligibleCustomers - result.AssignedCustomers;
-                    RecordAudit(CustomerDocumentAction.BulkCategoryAssignment, actor, category: category,
-                        notes: $"Assigned to {result.AssignedCustomers} customer(s); {result.AlreadyAssignedCustomers} already assigned.");
-                    category.UpdatedAt = DateTime.UtcNow;
-                    await _context.SaveChangesAsync(cancellationToken);
-                    if (transaction != null)
-                        await transaction.CommitAsync(cancellationToken);
-                }
-                catch (DbUpdateException ex) when (IsUniqueViolation(ex))
-                {
-                    if (transaction != null)
-                        await transaction.RollbackAsync(CancellationToken.None);
-                    throw new InvalidOperationException("The category assignment conflicted with another request. No duplicate was created; refresh and retry.", ex);
-                }
-            });
-
-            return result;
-        }
 
         public async Task<CustomerDocumentChecklistDto> GetChecklistAsync(
             int customerId,
@@ -340,9 +280,8 @@ namespace DAMS.Application.Services
                 .Select(r => r.CategoryId!.Value)
                 .ToHashSet();
             var available = await _context.CustomerDocumentCategories.AsNoTracking()
-                // "Asked from every customer" is a category that is both required and handed to every new customer.
-                .Where(c => c.IsActive && !(c.IsRequiredByDefault && c.AssignToNewCustomers) && c.Code != OtherCategoryCode)
-                .OrderBy(c => c.DisplayOrder).ThenBy(c => c.Name)
+                .Where(c => !c.IsHidden && !c.IsOther && !c.AsksEveryCustomer)
+                .OrderBy(c => c.Id)
                 .Select(c => new CustomerDocumentTypeOptionDto { CategoryId = c.Id, Name = c.Name })
                 .ToListAsync(cancellationToken);
 
@@ -428,7 +367,7 @@ namespace DAMS.Application.Services
                 var category = await _context.CustomerDocumentCategories.AsNoTracking()
                     .SingleOrDefaultAsync(c => c.Id == categoryId.Value, cancellationToken)
                     ?? throw new KeyNotFoundException("Document type not found.");
-                if (!category.IsActive)
+                if (category.IsHidden || category.IsOther)
                     throw new InvalidOperationException("That document type is no longer available.");
                 documentName = category.Name;
             }
@@ -480,6 +419,11 @@ namespace DAMS.Application.Services
                             CreatedAt = now
                         };
                         _context.CustomerDocumentRequirements.Add(requirement);
+                    }
+                    else
+                    {
+                        requirement.IsSuppressed = false;
+                        requirement.Name = documentName;
                     }
                     var version = AttachFile(requirement, storedFileName, validated, actor, now);
                     RecordAudit(CustomerDocumentAction.DocumentAdded, actor, customer, requirement,
@@ -655,37 +599,190 @@ namespace DAMS.Application.Services
             };
         }
 
-        private async Task<int> AssignBatchAsync(
+        private async Task<CustomerDocumentCategory> EditableCategoryAsync(int id, CancellationToken cancellationToken)
+        {
+            var category = await _context.CustomerDocumentCategories
+                .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
+                ?? throw new KeyNotFoundException("Document not found.");
+            if (category.IsHidden || category.IsOther)
+                throw new InvalidOperationException("That document is not on Document setup.");
+            return category;
+        }
+
+        private async Task EnsureUniqueNameAsync(string name, int? exceptId, CancellationToken cancellationToken)
+        {
+            var key = name.ToLower();
+            var clash = await _context.CustomerDocumentCategories.AnyAsync(
+                c => (exceptId == null || c.Id != exceptId) && c.Name.ToLower() == key, cancellationToken);
+            if (clash)
+                throw new CustomerDocumentConflictException(NameClashMessage);
+        }
+
+        private static DocumentSetupItemDto ToSetupItem(CustomerDocumentCategory category) => new()
+        {
+            Id = category.Id,
+            Name = category.Name,
+            AsksEveryCustomer = category.AsksEveryCustomer
+        };
+
+        private async Task AskEveryoneAsync(
             CustomerDocumentCategory category,
-            List<Customer> customers,
             CustomerDocumentActor actor,
             CancellationToken cancellationToken)
         {
-            if (customers.Count == 0)
-                return 0;
-            var ids = customers.Select(c => c.Id).ToArray();
-            var existingRows = await _context.CustomerDocumentRequirements
-                .Where(r => r.CategoryId == category.Id && ids.Contains(r.CustomerId))
-                .Select(r => r.CustomerId)
-                .ToListAsync(cancellationToken);
-            var existing = existingRows.ToHashSet();
             var now = DateTime.UtcNow;
-            var count = 0;
-            foreach (var customer in customers.Where(c => !existing.Contains(c.Id)))
+            category.AsksEveryCustomer = true;
+            category.UpdatedAt = now;
+            var afterId = 0;
+            while (true)
             {
-                var requirement = CustomerDocumentAssignment.FromCategory(customer, category, actor, now);
-                _context.CustomerDocumentRequirements.Add(requirement);
-                RecordAudit(CustomerDocumentAction.CategoryAssigned, actor, customer, requirement, category,
-                    newStatus: CustomerDocumentStatus.Needed, notes: "Assigned by a confirmed bulk action.");
-                count++;
+                var customers = await _context.Customers
+                    .Where(c => c.Status != CustomerStatus.Blocked && c.Id > afterId)
+                    .OrderBy(c => c.Id)
+                    .Take(AssignmentBatchSize)
+                    .ToListAsync(cancellationToken);
+                if (customers.Count == 0)
+                    break;
+                afterId = customers[^1].Id;
+                await AskBatchAsync(category, customers, actor, now, cancellationToken);
             }
-            if (count > 0)
+
+            RecordAudit(CustomerDocumentAction.BulkCategoryAssignment, actor, category: category,
+                notes: $"Ask every customer switched on for '{category.Name}'.");
+            await _context.SaveChangesAsync(cancellationToken);
+            DetachExcept(category);
+        }
+
+        private async Task AskBatchAsync(
+            CustomerDocumentCategory category,
+            List<Customer> customers,
+            CustomerDocumentActor actor,
+            DateTime now,
+            CancellationToken cancellationToken)
+        {
+            var ids = customers.Select(c => c.Id).ToArray();
+            var rows = await _context.CustomerDocumentRequirements
+                .Where(r => r.CategoryId == category.Id && ids.Contains(r.CustomerId))
+                .ToListAsync(cancellationToken);
+            var rowIds = rows.Select(r => r.Id).ToArray();
+            var withFiles = rowIds.Length == 0
+                ? []
+                : (await _context.CustomerDocumentVersions.AsNoTracking()
+                    .Where(v => rowIds.Contains(v.RequirementId))
+                    .Select(v => v.RequirementId)
+                    .Distinct()
+                    .ToListAsync(cancellationToken)).ToHashSet();
+            var byCustomer = rows.ToDictionary(r => r.CustomerId);
+
+            foreach (var customer in customers)
+            {
+                if (!byCustomer.TryGetValue(customer.Id, out var row))
+                {
+                    var created = CustomerDocumentAssignment.FromCategory(customer, category, actor, now);
+                    _context.CustomerDocumentRequirements.Add(created);
+                    RecordAudit(CustomerDocumentAction.CategoryAssigned, actor, customer, created, category,
+                        newStatus: CustomerDocumentStatus.Needed,
+                        notes: $"'{category.Name}' is Needed because it is asked from every customer.");
+                    continue;
+                }
+
+                if (withFiles.Contains(row.Id))
+                {
+                    row.IsSuppressed = false;
+                    continue;
+                }
+
+                if (row.Status == CustomerDocumentStatus.NotNeeded)
+                {
+                    row.IsSuppressed = false;
+                    continue;
+                }
+
+                var previous = row.Status;
+                var changed = row.IsSuppressed || !row.IsRequired || row.Status != CustomerDocumentStatus.Needed;
+                row.Status = CustomerDocumentStatus.Needed;
+                row.IsRequired = true;
+                row.IsSuppressed = false;
+                row.NotNeededReason = null;
+                row.NotNeededByUserId = null;
+                row.NotNeededByName = null;
+                row.NotNeededAt = null;
+                row.Name = category.Name;
+                Touch(row, actor, now);
+                if (changed)
+                    RecordAudit(CustomerDocumentAction.CategoryAssigned, actor, customer, row, category,
+                        previousStatus: previous, newStatus: CustomerDocumentStatus.Needed,
+                        notes: $"'{category.Name}' is Needed because it is asked from every customer.");
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            DetachExcept(category);
+        }
+
+        private async Task StopAskingAsync(
+            CustomerDocumentCategory category,
+            CustomerDocumentActor actor,
+            CancellationToken cancellationToken)
+        {
+            category.AsksEveryCustomer = false;
+            category.UpdatedAt = DateTime.UtcNow;
+            await WithdrawCopiesWithoutFilesAsync(category, actor,
+                "Removed because the document is no longer asked. Copies with a file stay.", cancellationToken);
+            RecordAudit(CustomerDocumentAction.BulkCategoryAssignment, actor, category: category,
+                notes: $"Ask every customer switched off for '{category.Name}'.");
+            await _context.SaveChangesAsync(cancellationToken);
+            DetachExcept(category);
+        }
+
+        /// <summary>Copies with no file disappear from customer lists. Copies with a file stay under Done. Rows are not deleted.</summary>
+        private async Task WithdrawCopiesWithoutFilesAsync(
+            CustomerDocumentCategory category,
+            CustomerDocumentActor actor,
+            string notes,
+            CancellationToken cancellationToken)
+        {
+            var now = DateTime.UtcNow;
+            var afterId = 0;
+            while (true)
+            {
+                var batch = await _context.CustomerDocumentRequirements
+                    .Where(r => r.CategoryId == category.Id && r.Id > afterId)
+                    .OrderBy(r => r.Id)
+                    .Take(AssignmentBatchSize)
+                    .Select(r => new { r.Id, HasFile = r.Versions.Any() })
+                    .ToListAsync(cancellationToken);
+                if (batch.Count == 0)
+                    break;
+                afterId = batch[^1].Id;
+                var fileless = batch.Where(r => !r.HasFile).Select(r => r.Id).ToArray();
+                if (fileless.Length == 0)
+                    continue;
+                var rows = await _context.CustomerDocumentRequirements
+                    .Where(r => fileless.Contains(r.Id))
+                    .Include(r => r.Customer)
+                    .ToListAsync(cancellationToken);
+                foreach (var row in rows)
+                {
+                    if (row.IsSuppressed && !row.IsRequired)
+                        continue;
+                    var previous = row.Status;
+                    row.IsSuppressed = true;
+                    row.IsRequired = false;
+                    Touch(row, actor, now);
+                    RecordAudit(CustomerDocumentAction.CategoryUpdated, actor, row.Customer, row, category,
+                        previousStatus: previous, newStatus: row.Status, notes: notes);
+                }
                 await _context.SaveChangesAsync(cancellationToken);
+                DetachExcept(category);
+            }
+        }
+
+        private void DetachExcept(CustomerDocumentCategory category)
+        {
             foreach (var entry in _context.ChangeTracker.Entries()
                          .Where(e => !ReferenceEquals(e.Entity, category))
                          .ToList())
                 entry.State = EntityState.Detached;
-            return count;
         }
 
         private async Task<CustomerDocumentRequirement> LoadRequirementForWriteAsync(
@@ -711,15 +808,6 @@ namespace DAMS.Application.Services
                 ?? throw new KeyNotFoundException("Document requirement not found.");
             return MapRequirement(requirement);
         }
-
-        private async Task<int> RequirementIdAsync(int customerId, int categoryId, CancellationToken cancellationToken) =>
-            await _context.CustomerDocumentRequirements.AsNoTracking()
-                .Where(r => r.CustomerId == customerId && r.CategoryId == categoryId)
-                .Select(r => r.Id)
-                .SingleAsync(cancellationToken);
-
-        private async Task<CustomerDocumentCategoryDto> LoadCategoryAsync(int id, CancellationToken cancellationToken) =>
-            (await GetCategoriesAsync(true, cancellationToken)).Single(c => c.Id == id);
 
         private static CustomerDocumentRequirementDto MapRequirement(CustomerDocumentRequirement requirement)
         {
@@ -764,11 +852,15 @@ namespace DAMS.Application.Services
             UploadedAt = version.UploadedAt
         };
 
-        /// <summary>A document shows on the customer's checklist when it was asked from them, has a file, or was set aside.</summary>
+        /// <summary>
+        /// A copy shows when it has a file, or it is still asked (Needed) or set aside (Not needed).
+        /// A switched-off or removed copy with no file is suppressed and disappears. Nothing is deleted.
+        /// </summary>
         private static bool IsVisible(CustomerDocumentRequirement requirement) =>
-            requirement.IsRequired
-            || requirement.Status != CustomerDocumentStatus.Needed
-            || requirement.Versions.Count > 0;
+            requirement.Versions.Count > 0
+            || (!requirement.IsSuppressed && (
+                requirement.IsRequired
+                || requirement.Status != CustomerDocumentStatus.Needed));
 
         private static ValidatedUpload ValidateFile(CustomerDocumentUpload upload)
         {
@@ -816,10 +908,6 @@ namespace DAMS.Application.Services
         private void ApplyConcurrencyToken(CustomerDocumentRequirement requirement, string token) =>
             ApplyConcurrencyToken(requirement.RowVersion, token,
                 expected => _context.Entry(requirement).Property(r => r.RowVersion).OriginalValue = expected);
-
-        private void ApplyConcurrencyToken(CustomerDocumentCategory category, string token) =>
-            ApplyConcurrencyToken(category.RowVersion, token,
-                expected => _context.Entry(category).Property(c => c.RowVersion).OriginalValue = expected);
 
         private static void ApplyConcurrencyToken(byte[] current, string token, Action<byte[]> setOriginal)
         {
@@ -903,31 +991,6 @@ namespace DAMS.Application.Services
             });
         }
 
-        private static readonly (string Label, Func<CustomerDocumentCategory, string?> Value)[] CategoryFields =
-        {
-            ("Name", c => c.Name),
-            ("Code", c => c.Code),
-            ("Description", c => c.Description),
-            ("IsRequiredByDefault", c => c.IsRequiredByDefault.ToString()),
-            ("DisplayOrder", c => c.DisplayOrder.ToString()),
-            ("IsActive", c => c.IsActive.ToString()),
-            ("AssignToNewCustomers", c => c.AssignToNewCustomers.ToString()),
-        };
-
-        private static List<(string Label, string? Value)> CategorySnapshot(CustomerDocumentCategory c) =>
-            CategoryFields.Select(f => (f.Label, f.Value(c))).ToList();
-
-        private static string DiffSnapshots(
-            List<(string Label, string? Value)> before,
-            List<(string Label, string? Value)> after)
-        {
-            var changes = new List<string>();
-            for (var i = 0; i < before.Count; i++)
-                if (!string.Equals(before[i].Value, after[i].Value, StringComparison.Ordinal))
-                    changes.Add($"{before[i].Label}: {before[i].Value ?? "—"} → {after[i].Value ?? "—"}");
-            return changes.Count == 0 ? "No fields changed." : string.Join("; ", changes);
-        }
-
         private static void Touch(CustomerDocumentRequirement requirement, CustomerDocumentActor actor, DateTime now)
         {
             requirement.LastActionByUserId = actor.UserId;
@@ -935,40 +998,11 @@ namespace DAMS.Application.Services
             requirement.UpdatedAt = now;
         }
 
-        private static (string Name, string Code, string? Description) ValidateCategory(
-            string name,
-            string code,
-            string? description)
-        {
-            var normalizedCode = CleanRequired(code, 80, "Category code").ToLowerInvariant();
-            if (!Regex.IsMatch(normalizedCode, "^[a-z0-9][a-z0-9_-]*$", RegexOptions.CultureInvariant))
-                throw new InvalidOperationException("Category code may contain lowercase letters, numbers, underscores, and hyphens only.");
-            return (CleanRequired(name, 150, "Category name"), normalizedCode, CleanOptional(description, 1000));
-        }
-
-        private static void ValidateAssignment(CustomerDocumentAssignmentMode mode, List<int>? selected)
-        {
-            if (!Enum.IsDefined(mode))
-                throw new InvalidOperationException("The category assignment choice is invalid.");
-            if (mode == CustomerDocumentAssignmentMode.SelectedCustomers && (selected == null || selected.Count == 0))
-                throw new InvalidOperationException("Choose at least one customer for selected-customer assignment.");
-            if ((selected?.Distinct().Count() ?? 0) > 5000)
-                throw new InvalidOperationException("Select at most 5000 customers in one action.");
-        }
-
         private static string CleanRequired(string? value, int maxLength, string label)
         {
             var cleaned = value?.Trim();
             if (string.IsNullOrWhiteSpace(cleaned))
                 throw new InvalidOperationException($"{label} is required.");
-            return cleaned.Length <= maxLength ? cleaned : cleaned[..maxLength];
-        }
-
-        private static string? CleanOptional(string? value, int maxLength)
-        {
-            var cleaned = value?.Trim();
-            if (string.IsNullOrWhiteSpace(cleaned))
-                return null;
             return cleaned.Length <= maxLength ? cleaned : cleaned[..maxLength];
         }
 

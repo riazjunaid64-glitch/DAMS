@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using DAMS.Api.Controllers;
+using DAMS.Api.Security;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.CustomerDtos;
@@ -21,12 +22,10 @@ public sealed class CustomerDocumentTests
     private static readonly CustomerDocumentActor Admin = new(10, "Ayesha Admin");
 
     [Fact]
-    public async Task NewCustomer_ReceivesOnlyActiveFutureCategories_WithoutBlockingCreation()
+    public async Task NewCustomer_ReceivesOnlyDocumentsAskedFromEveryone()
     {
         await using var db = Context();
-        var inactive = await db.CustomerDocumentCategories.SingleAsync(c => c.Code == "passport");
-        inactive.IsActive = false;
-        await db.SaveChangesAsync();
+        var passport = await db.CustomerDocumentCategories.SingleAsync(c => c.Name == "Passport");
 
         var customer = await new CustomerService(db).CreateCustomerAsync(new CreateCustomerDto
         {
@@ -35,116 +34,10 @@ public sealed class CustomerDocumentTests
         }, Admin.UserId, Admin.DisplayName);
 
         var requirements = await db.CustomerDocumentRequirements.Where(r => r.CustomerId == customer.Id).ToListAsync();
-        Assert.Equal(8, requirements.Count);
-        Assert.DoesNotContain(requirements, r => r.CategoryId == inactive.Id);
+        Assert.Equal(3, requirements.Count);
+        Assert.DoesNotContain(requirements, r => r.CategoryId == passport.Id);
         Assert.All(requirements, r => Assert.Equal(CustomerDocumentStatus.Needed, r.Status));
         Assert.Equal(3, customer.DocumentsNeeded);
-    }
-
-    [Fact]
-    public async Task Category_CreateEditDuplicateCodeAndUsedDelete_AreControlled()
-    {
-        await using var db = Context();
-        var service = Service(db);
-        var category = await service.CreateCategoryAsync(Category("proof_of_income"), Admin);
-        Assert.Equal("proof_of_income", category.Code);
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.CreateCategoryAsync(Category("proof_of_income"), Admin));
-
-        var customer = await Customer(db, "Customer One");
-        await service.AssignCategoryAsync(category.Id, new AssignCustomerDocumentCategoryDto
-        {
-            AssignmentMode = CustomerDocumentAssignmentMode.SelectedCustomers,
-            SelectedCustomerIds = [customer.Id]
-        }, Admin);
-
-        category = (await service.GetCategoriesAsync(true)).Single(c => c.Id == category.Id);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.UpdateCategoryAsync(category.Id,
-            new UpdateCustomerDocumentCategoryDto
-            {
-                Name = category.Name,
-                Code = "changed_code",
-                IsRequiredByDefault = true,
-                DisplayOrder = 100,
-                IsActive = false,
-                ConcurrencyToken = category.ConcurrencyToken
-            }, Admin));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.DeleteCategoryAsync(category.Id, Admin));
-    }
-
-    [Fact]
-    public async Task CategoryUpdate_RecordsChangedControlValues_InAudit()
-    {
-        await using var db = Context();
-        var service = Service(db);
-        var category = await service.CreateCategoryAsync(Category("kyc_form"), Admin);
-
-        await service.UpdateCategoryAsync(category.Id, new UpdateCustomerDocumentCategoryDto
-        {
-            Name = category.Name,
-            Code = category.Code,
-            IsRequiredByDefault = false,
-            DisplayOrder = 42,
-            IsActive = true,
-            ConcurrencyToken = category.ConcurrencyToken
-        }, Admin);
-
-        var audit = Assert.Single(await db.CustomerDocumentAuditEntries
-            .Where(a => a.Action == CustomerDocumentAction.CategoryUpdated).ToListAsync());
-        Assert.NotNull(audit.Notes);
-        // The audit preserves the exact before -> after values of the changed policy fields.
-        Assert.Contains("IsRequiredByDefault: True → False", audit.Notes);
-        Assert.Contains("DisplayOrder: 100 → 42", audit.Notes);
-    }
-
-    [Fact]
-    public async Task BulkAssignment_IsIdempotent_AndAudited()
-    {
-        await using var db = Context();
-        var service = Service(db);
-        var first = await Customer(db, "First");
-        var second = await Customer(db, "Second");
-        var category = await service.CreateCategoryAsync(Category("updated_cnic"), Admin);
-        var request = new AssignCustomerDocumentCategoryDto
-        {
-            AssignmentMode = CustomerDocumentAssignmentMode.SelectedCustomers,
-            SelectedCustomerIds = [first.Id, second.Id]
-        };
-
-        var initial = await service.AssignCategoryAsync(category.Id, request, Admin);
-        var repeated = await service.AssignCategoryAsync(category.Id, request, Admin);
-
-        Assert.Equal(2, initial.AssignedCustomers);
-        Assert.Equal(0, repeated.AssignedCustomers);
-        Assert.Equal(2, repeated.AlreadyAssignedCustomers);
-        Assert.Equal(2, await db.CustomerDocumentRequirements.CountAsync(r => r.CategoryId == category.Id));
-        Assert.True(await db.CustomerDocumentAuditEntries.AnyAsync(a => a.Action == CustomerDocumentAction.BulkCategoryAssignment));
-    }
-
-    [Fact]
-    public async Task AllActiveAssignment_DoesNotSilentlyApplyToFutureCustomers()
-    {
-        await using var db = Context();
-        var service = Service(db);
-        var existing = await Customer(db, "Existing Customer");
-        var category = await service.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
-        {
-            Name = "Existing Population Check",
-            Code = "existing_population_check",
-            IsRequiredByDefault = true,
-            AssignmentMode = CustomerDocumentAssignmentMode.AllActiveCustomers
-        }, Admin);
-
-        Assert.True(await db.CustomerDocumentRequirements.AnyAsync(r => r.CustomerId == existing.Id && r.CategoryId == category.Id));
-        Assert.False(category.AssignToNewCustomers);
-
-        var future = await new CustomerService(db).CreateCustomerAsync(new CreateCustomerDto
-        {
-            FullName = "Future Customer",
-            Phone = "03009999999"
-        }, Admin.UserId, Admin.DisplayName);
-        Assert.False(await db.CustomerDocumentRequirements.AnyAsync(r => r.CustomerId == future.Id && r.CategoryId == category.Id));
     }
 
     [Fact]
@@ -176,11 +69,9 @@ public sealed class CustomerDocumentTests
         // Required but handed out manually: not asked from every customer, so it can be added.
         db.CustomerDocumentCategories.Add(new CustomerDocumentCategory
         {
-            Name = "Manual Required", Code = "manual_required", IsActive = true, IsRequiredByDefault = true,
-            AssignToNewCustomers = false, DisplayOrder = 5, CreatedAt = DateTime.UtcNow
+            Name = "Manual Required", AsksEveryCustomer = false, CreatedAt = DateTime.UtcNow
         });
-        // Optional and handed to every new customer: still quiet, so it can be added too.
-        var cnic = await db.CustomerDocumentCategories.SingleAsync(c => c.Code == "cnic_front");
+        var cnic = await db.CustomerDocumentCategories.SingleAsync(c => c.Name == "CNIC Front");
         await db.SaveChangesAsync();
 
         var types = (await service.GetChecklistAsync(customer.Id)).AvailableTypes.Select(t => t.Name).ToList();
@@ -238,7 +129,13 @@ public sealed class CustomerDocumentTests
         {
             FullName = "Sara Ahmed", Phone = "0300-7654321"
         }, Admin.UserId, Admin.DisplayName);
-        var passport = await db.CustomerDocumentCategories.AsNoTracking().SingleAsync(c => c.Code == "passport");
+        var passport = await db.CustomerDocumentCategories.AsNoTracking().SingleAsync(c => c.Name == "Passport");
+        db.CustomerDocumentRequirements.Add(new CustomerDocumentRequirement
+        {
+            CustomerId = customer.Id, CategoryId = passport.Id, Name = passport.Name,
+            IsRequired = false, IsSuppressed = true, Status = CustomerDocumentStatus.Needed
+        });
+        await db.SaveChangesAsync();
         var quiet = await db.CustomerDocumentRequirements.AsNoTracking()
             .SingleAsync(r => r.CustomerId == customer.Id && r.CategoryId == passport.Id);
 
@@ -414,7 +311,12 @@ public sealed class CustomerDocumentTests
     {
         var authorize = typeof(CustomerDocumentsController).GetCustomAttribute<AuthorizeAttribute>();
         Assert.NotNull(authorize);
-        Assert.Equal(AppRoles.AdminOrAccountant, authorize!.Roles);
+        Assert.Equal(DamsPolicies.Customers, authorize!.Policy);
+        Assert.Null(authorize.Roles);
+        Assert.True(AppCapabilities.Can(AppRoles.Admin, AppCapabilities.Customers));
+        Assert.True(AppCapabilities.Can(AppRoles.Accountant, AppCapabilities.Customers));
+        Assert.False(AppCapabilities.Can(AppRoles.Manager, AppCapabilities.Customers));
+        Assert.False(AppCapabilities.Can(AppRoles.Employee, AppCapabilities.Customers));
     }
 
     [Fact]
@@ -460,30 +362,17 @@ public sealed class CustomerDocumentTests
     }
 
     [Fact]
-    public async Task CategoryUpdate_WithLongValues_PreservesFullBeforeAfter_WithoutTruncation()
+    public async Task Rename_KeepsTheFullNewName_OnTheAudit()
     {
         await using var db = Context();
         var service = Service(db);
-        var category = await service.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
-        {
-            Name = "Long Detail", Code = "long_detail", IsRequiredByDefault = true,
-            Description = new string('a', 1000), AssignmentMode = CustomerDocumentAssignmentMode.None
-        }, Admin);
-
-        // The before -> after diff of the two 1,000-char descriptions exceeds the old 2,000-char cap.
-        await service.UpdateCategoryAsync(category.Id, new UpdateCustomerDocumentCategoryDto
-        {
-            Name = "Long Detail", Code = "long_detail", IsRequiredByDefault = true, DisplayOrder = category.DisplayOrder,
-            Description = new string('b', 1000),
-            IsActive = true, ConcurrencyToken = category.ConcurrencyToken
-        }, Admin);
+        var created = await service.CreateDocumentAsync(new SaveDocumentNameDto { Name = "Long Detail" }, Admin);
+        var renamed = new string('b', 150);
+        await service.RenameDocumentAsync(created.Id, new SaveDocumentNameDto { Name = renamed }, Admin);
 
         var audit = Assert.Single(await db.CustomerDocumentAuditEntries
             .Where(a => a.Action == CustomerDocumentAction.CategoryUpdated).ToListAsync());
-        Assert.NotNull(audit.Notes);
-        Assert.True(audit.Notes!.Length > 2000);
-        // The exact new value is preserved in full rather than truncated at the old cap.
-        Assert.Contains(new string('b', 1000), audit.Notes);
+        Assert.Contains(renamed, audit.Notes);
     }
 
     [Fact]
@@ -554,9 +443,7 @@ public sealed class CustomerDocumentTests
         db.CustomerDocumentCategories.RemoveRange(await db.CustomerDocumentCategories.ToListAsync());
         db.CustomerDocumentCategories.Add(new CustomerDocumentCategory
         {
-            Name = "Default identity", Code = "default_identity", IsActive = true,
-            AssignToNewCustomers = true, IsRequiredByDefault = true, DisplayOrder = 1,
-            CreatedAt = DateTime.UtcNow
+            Name = "Default identity", AsksEveryCustomer = true, CreatedAt = DateTime.UtcNow
         });
         await db.SaveChangesAsync();
 
@@ -587,6 +474,33 @@ public sealed class CustomerDocumentTests
         Assert.Single(await db.CustomerDocumentRequirements.Where(row => row.CustomerId == created.Id).ToListAsync());
     }
 
+    [Fact]
+    public async Task Reconciliation_SurfacesWriteFailuresThatAreNotADuplicateRace()
+    {
+        await using var db = Context();
+        db.CustomerDocumentCategories.RemoveRange(await db.CustomerDocumentCategories.ToListAsync());
+        db.CustomerDocumentCategories.Add(new CustomerDocumentCategory
+        {
+            Name = "Default identity", AsksEveryCustomer = true, CreatedAt = DateTime.UtcNow
+        });
+        db.Customers.Add(new Customer
+        {
+            FullName = "Needs docs", Phone = "03007654321", Status = CustomerStatus.Active, CreatedAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        db.SavingChanges += (_, _) =>
+        {
+            if (db.ChangeTracker.Entries<CustomerDocumentRequirement>().Any(entry => entry.State == EntityState.Added))
+                throw new DbUpdateException("The document row could not be stored.", new InvalidOperationException("Foreign key rejected the row."));
+        };
+
+        var reconciler = new CustomerDocumentReconciliationService(db,
+            NullLogger<CustomerDocumentReconciliationService>.Instance);
+        var error = await Assert.ThrowsAsync<DbUpdateException>(() => reconciler.ReconcileBatchAsync());
+        Assert.Contains("could not be stored", error.Message);
+    }
+
     private static AppDbContext Context()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -599,14 +513,6 @@ public sealed class CustomerDocumentTests
 
     private static CustomerDocumentService Service(AppDbContext db, MemoryStorage? storage = null) =>
         new(db, storage ?? new MemoryStorage(), NullLogger<CustomerDocumentService>.Instance);
-
-    private static CreateCustomerDocumentCategoryDto Category(string code) => new()
-    {
-        Name = code.Replace('_', ' '),
-        Code = code,
-        IsRequiredByDefault = true,
-        AssignmentMode = CustomerDocumentAssignmentMode.None
-    };
 
     /// <summary>A document asked from the customer: a custom required row with no file yet.</summary>
     private static async Task<CustomerDocumentRequirementDto> Custom(

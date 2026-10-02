@@ -12,6 +12,8 @@ namespace DAMS.Domain.Entities
         public string? Description { get; set; }
         public bool IsRequired { get; set; }
         public int DisplayOrder { get; set; }
+        /// <summary>Hidden from the customer's documents. Set when the type is switched off or removed and this copy has no file.</summary>
+        public bool IsSuppressed { get; set; }
         public CustomerDocumentStatus Status { get; set; } = CustomerDocumentStatus.Needed;
         public string? NotNeededReason { get; set; }
         public int? NotNeededByUserId { get; set; }

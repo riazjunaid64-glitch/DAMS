@@ -1,5 +1,6 @@
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -29,9 +30,9 @@ public sealed class CustomerDocumentReconciliationService
     public async Task<int> ReconcileBatchAsync(CancellationToken cancellationToken = default)
     {
         var ids = await _context.Customers.AsNoTracking()
-            .Where(customer => customer.Status == CustomerStatus.Active
+            .Where(customer => customer.Status != CustomerStatus.Blocked
                 && _context.CustomerDocumentCategories.Any(category =>
-                    category.IsActive && category.AssignToNewCustomers
+                    category.AsksEveryCustomer && !category.IsHidden && !category.IsOther
                     && !_context.CustomerDocumentRequirements.Any(requirement =>
                         requirement.CustomerId == customer.Id && requirement.CategoryId == category.Id)))
             .OrderBy(customer => customer.Id)
@@ -49,10 +50,11 @@ public sealed class CustomerDocumentReconciliationService
                 await _context.SaveChangesAsync(cancellationToken);
                 reconciled++;
             }
-            catch (DbUpdateException ex)
+            catch (DbUpdateException ex) when (IsDuplicateAssignmentRace(ex))
             {
-                // Another instance may have won the unique (customer, category) race. Clear only the
+                // Another instance won the unique (customer, category) insert. Clear only the
                 // failed advisory rows and continue; the next sweep re-evaluates the actual state.
+                // Any other write failure is left to surface.
                 _logger.LogInformation(ex,
                     "Document defaults for customer {CustomerId} raced with another reconciler; current state will be rechecked.", id);
                 foreach (var entry in _context.ChangeTracker.Entries()
@@ -65,5 +67,21 @@ public sealed class CustomerDocumentReconciliationService
         }
 
         return reconciled;
+    }
+
+    /// <summary>
+    /// The race is the filtered unique index on (customer, category). A foreign key, a check,
+    /// or any other persistence failure is a different exception and must not be treated as one.
+    /// </summary>
+    private static bool IsDuplicateAssignmentRace(DbUpdateException exception)
+    {
+        for (var current = (Exception?)exception; current != null; current = current.InnerException)
+        {
+            if (current is SqlException { Number: 2601 or 2627 } sql)
+                return sql.Message.Contains(
+                    "IX_CustomerDocumentRequirements_CustomerId_CategoryId",
+                    StringComparison.OrdinalIgnoreCase);
+        }
+        return false;
     }
 }

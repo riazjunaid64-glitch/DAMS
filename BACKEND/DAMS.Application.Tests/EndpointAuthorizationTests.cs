@@ -229,7 +229,7 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
             R("POST", "/api/customer-documents/categories"),
             R("PUT", "/api/customer-documents/categories/1"),
             R("DELETE", "/api/customer-documents/categories/1"),
-            R("POST", "/api/customer-documents/categories/1/assign"),
+            R("PUT", "/api/customer-documents/categories/1/ask-every-customer"),
             R("GET", "/api/customer-documents/customers/1"),
             R("GET", "/api/customer-documents/customers/1/history"),
             R("GET", "/api/customer-documents/customers/1/requirements/1/versions"),
