@@ -64,6 +64,8 @@ export type FilterDef = FilterBase & (
       customLabel?: string;
       /** Set to false to name the year options without their months, when the dates are on screen anyway. */
       monthsInLabel?: boolean;
+      /** What both dates empty mean on this page (the server's own default), shown instead of "All time" / Custom. */
+      emptyPreset?: Exclude<PeriodPreset, "custom">;
     }
 );
 
@@ -258,7 +260,10 @@ export function FilterBar({ search, filters, values, onChange, onReset, defaults
   const renderPeriod = (filter: Extract<FilterDef, { type: "period" }>, source: FilterValues, onPreset: (preset: string) => void, size: "filter" | "form") => {
     const status = filter.financialYear ?? "ready";
     const options = periodSelectOptions(filter.rangeFor, status, filter.presets, filter.customLabel, filter.monthsInLabel);
-    const matched = periodPresetForDates(source[filter.fromKey] ?? "", source[filter.toKey] ?? "", filter.rangeFor);
+    const bothEmpty = !(source[filter.fromKey] ?? "") && !(source[filter.toKey] ?? "");
+    const matched = bothEmpty && filter.emptyPreset
+      ? filter.emptyPreset
+      : periodPresetForDates(source[filter.fromKey] ?? "", source[filter.toKey] ?? "", filter.rangeFor);
     const preset = options.some((option) => option.value === matched) ? matched : "custom";
     return (
       <Dropdown

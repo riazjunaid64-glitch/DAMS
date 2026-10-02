@@ -241,11 +241,14 @@ describe("Financial reports: Profit & loss", () => {
     expect(await screen.findByText("Profit & loss · 2026-27")).toBeTruthy();
   });
 
-  it("tells the user when the financial year setting cannot be read", async () => {
+  it("tells the user when the financial year setting cannot be read, and still reads as this financial year", async () => {
     settingsStatus = 500;
     show();
     expect(await screen.findByText("Financial year setting unavailable — use a custom From/To range.")).toBeTruthy();
     expect(await screen.findByText("Profit & loss · 2026-27")).toBeTruthy();
+    // No dates are sent, so the server's current financial year is what is shown; it is not a custom range.
+    expect(screen.getByRole("combobox", { name: /Period/ }).textContent).toContain("This financial year");
+    expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
   });
 });
 
@@ -317,6 +320,20 @@ describe("Financial reports: Trial balance", () => {
 
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("closes Account details as soon as a Trial filter changes, before the new report arrives", async () => {
+    show();
+    await screen.findByText("Profit & loss · 2026-27");
+    openTab("Trial balance");
+    await screen.findByText("Closing balances as at Sep 29, 2026");
+    fireEvent.click(screen.getByRole("button", { name: "Details for Meezan Bank" }));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
+    fireEvent.click(screen.getByRole("option", { name: "Deen Square" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The old rows stay while the new report loads.
+    expect(within(screen.getByRole("table")).getByText("Meezan Bank")).toBeTruthy();
   });
 
   it("opens Account details when a row is tapped on a phone", async () => {

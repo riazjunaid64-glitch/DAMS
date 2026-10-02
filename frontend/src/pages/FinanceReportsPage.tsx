@@ -210,7 +210,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   if (tab === "pnl") {
     filters = [
       projectFilter,
-      { type: "period", key: "period", fromKey: "pnlFrom", toKey: "pnlTo", rangeFor, financialYear: yearStatus, presets: ["year", "lastYear"], customLabel: "Custom dates", monthsInLabel: false },
+      { type: "period", key: "period", fromKey: "pnlFrom", toKey: "pnlTo", rangeFor, financialYear: yearStatus, presets: ["year", "lastYear"], customLabel: "Custom dates", monthsInLabel: false, emptyPreset: "year" },
       { type: "dateRange", fromKey: "pnlFrom", toKey: "pnlTo" },
     ];
     values = { project: projectId, pnlFrom: pnl.from, pnlTo: pnl.to };
@@ -298,7 +298,9 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
         <ProfitLossReport report={shown?.tab === "pnl" ? shown.data : null} loading={loading} />
       ) : tab === "trial" ? (
         <TrialBalanceReport
-          key={shown?.tab === "trial" ? trialFiltersKey(shown.data.filters) : "none"}
+          // The current filters, not the loaded ones: Details closes the moment a filter changes,
+          // while the old rows stay on screen until the new report arrives.
+          key={request?.filters ? trialFiltersKey(request.filters) : "none"}
           loaded={shown?.tab === "trial" ? shown.data : null}
           loading={loading}
         />
