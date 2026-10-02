@@ -9,6 +9,10 @@ type Props = {
   confirmLabel: string;
   /** The outline button that backs out: "Cancel", "Keep commission". */
   cancelLabel?: string;
+  /** Longest reason accepted; `null` for no limit. */
+  maxLength?: number | null;
+  /** Keeps the red button off until a reason is typed, instead of explaining after the press. */
+  needsReason?: boolean;
   /** Prefix of the retry key handed to `onConfirm`. */
   keyPrefix: string;
   /** Does the work. Throws with the server's message when it is refused, and the popup stays open. */
@@ -21,7 +25,7 @@ type Props = {
  * rebate. The same reason keeps the same retry key, so pressing the button again after a dropped
  * connection is recognised as the retry it is rather than doing the work twice.
  */
-export function ReasonDialog({ title, message, confirmLabel, cancelLabel = "Cancel", keyPrefix, onConfirm, onClose }: Props) {
+export function ReasonDialog({ title, message, confirmLabel, cancelLabel = "Cancel", maxLength = 2000, needsReason = false, keyPrefix, onConfirm, onClose }: Props) {
   const keys = useIdempotencyKeys();
   const formId = useId();
   const [reason, setReason] = useState("");
@@ -58,7 +62,7 @@ export function ReasonDialog({ title, message, confirmLabel, cancelLabel = "Canc
       size="sm"
       title={title}
       cancelLabel={cancelLabel}
-      primaryAction={{ label: confirmLabel, variant: "danger", form: formId, loading: saving }}
+      primaryAction={{ label: confirmLabel, variant: "danger", form: formId, loading: saving, disabled: needsReason && !reason.trim() }}
     >
       <form id={formId} noValidate onSubmit={(event) => void submit(event)} className="flex flex-col gap-4">
         {error && <Notice tone="red" role="alert" title={error} />}
@@ -67,7 +71,7 @@ export function ReasonDialog({ title, message, confirmLabel, cancelLabel = "Canc
           label="Reason"
           required
           rows={3}
-          maxLength={2000}
+          maxLength={maxLength ?? undefined}
           disabled={saving}
           error={shown}
           value={reason}

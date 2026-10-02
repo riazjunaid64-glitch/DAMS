@@ -18,6 +18,8 @@ namespace DAMS.Application.Services
             "External Sales Agent", "Other"
         };
 
+        private const int MaxGeneratedCodeAttempts = 5;
+
         public async Task<PagedResult<ThirdPartyPartnerDto>> GetPartnersAsync(string? search, bool? isActive,
             int skip, int take, bool includeTotal = false,
             CancellationToken cancellationToken = default)
@@ -48,18 +50,38 @@ namespace DAMS.Application.Services
             // The booking screen adds a partner from a name and type alone, so the directory code is
             // generated when the caller does not supply one. Update still requires it: an existing
             // partner already has a code, and regenerating it would orphan what refers to it.
-            if (string.IsNullOrWhiteSpace(dto.InternalCode))
-                dto.InternalCode = await NextPartnerCodeAsync(cancellationToken);
-            ValidatePartner(dto);
-            await EnsurePartnerUniqueAsync(dto, null, cancellationToken);
-            var partner = new ThirdPartyPartner { CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName, CreatedAt = DateTime.UtcNow };
-            AssignPartner(partner, dto);
-            _context.ThirdPartyPartners.Add(partner);
-            var audit = Audit(FinancialWorkflowAction.PartnerCreated, actor);
-            audit.Partner = partner;
-            await _context.SaveChangesAsync(cancellationToken);
-            return await GetPartnerAsync(partner.Id, cancellationToken);
+            var generated = string.IsNullOrWhiteSpace(dto.InternalCode);
+            for (var attempt = 1; ; attempt++)
+            {
+                if (generated) dto.InternalCode = await NextPartnerCodeAsync(cancellationToken);
+                ValidatePartner(dto);
+                await EnsurePartnerUniqueAsync(dto, null, cancellationToken);
+                var partner = new ThirdPartyPartner { CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName, CreatedAt = DateTime.UtcNow };
+                AssignPartner(partner, dto);
+                _context.ThirdPartyPartners.Add(partner);
+                var audit = Audit(FinancialWorkflowAction.PartnerCreated, actor);
+                audit.Partner = partner;
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                    return await GetPartnerAsync(partner.Id, cancellationToken);
+                }
+                catch (DbUpdateException) when (generated && attempt < MaxGeneratedCodeAttempts)
+                {
+                    // Two partners added at once can be handed the same next code; the unique index lets
+                    // one win. The loser takes the next free code instead of failing with a generic conflict.
+                    _context.Entry(audit).State = EntityState.Detached;
+                    _context.Entry(partner).State = EntityState.Detached;
+                    var code = partner.InternalCode;
+                    if (!await _context.ThirdPartyPartners.AsNoTracking().AnyAsync(p => p.InternalCode == code, cancellationToken))
+                        throw;
+                }
+            }
         }
+
+        public async Task<ThirdPartyPartnerDto> GetPartnerByIdAsync(int id, CancellationToken cancellationToken = default) =>
+            await ProjectPartners(_context.ThirdPartyPartners.AsNoTracking().Where(p => p.Id == id))
+                .SingleOrDefaultAsync(cancellationToken) ?? throw new KeyNotFoundException("Partner not found.");
 
         public async Task<ThirdPartyPartnerDto> UpdatePartnerAsync(int id, SaveThirdPartyPartnerDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default)

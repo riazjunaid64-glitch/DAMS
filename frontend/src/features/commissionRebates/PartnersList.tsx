@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ActionsMenu, BottomSheet, Button, DataTable, EmptyState, FilterBar, IconMore, IconPencil, StatusBadge, useIsPhone, type DataTableColumn, type FilterValues } from "../../components/ui";
+import { ActionsMenu, BottomSheet, Button, DataTable, EmptyState, FilterBar, IconMore, IconPencil, StatusBadge, useIsPhone, useToast, type DataTableColumn, type FilterValues } from "../../components/ui";
 import { usePagedList, type PagedListQuery } from "../../lib/usePagedList.ts";
 import { commissionRebateApi } from "./api.ts";
 import { ListFooter, LoadError, PhoneCard } from "./ListParts.tsx";
@@ -30,11 +30,14 @@ type Props = {
 /** The partner directory: search, status, Edit, and Deactivate / Reactivate in the ⋯ menu. */
 export function PartnersList({ adding, onAddClose, onChanged, openPartnerId, onOpened }: Props) {
   const isPhone = useIsPhone();
+  const toast = useToast();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState(DEFAULT_STATUS);
   const [editing, setEditing] = useState<Partner | null>(null);
   const [statusAction, setStatusAction] = useState<{ partner: Partner; active: boolean } | null>(null);
   const [menuFor, setMenuFor] = useState<Partner | null>(null);
+  const [lookupFailed, setLookupFailed] = useState(false);
+  const [lookupAttempt, setLookupAttempt] = useState(0);
 
   const fetchPage = useCallback(async ({ skip, take, signal }: PagedListQuery) => {
     const isActive = status === "active" ? true : status === "inactive" ? false : undefined;
@@ -44,20 +47,28 @@ export function PartnersList({ adding, onAddClose, onChanged, openPartnerId, onO
   const list = usePagedList<Partner>({ queryKey: `${search}|${status}`, fetchPage });
   const failedEmpty = list.error !== null && list.rows.length === 0;
 
-  // A link names a partner by id. The list may not hold it (a later page, or hidden by the status
-  // filter), so it is looked up in the whole directory, which the server returns up to 500 at a time.
+  // A link names a partner by id: fetch exactly that one. The link's parameter is dropped only once the
+  // answer is known (found, or no such partner); a failed lookup keeps it so Try again can ask again.
   useEffect(() => {
     if (openPartnerId === null) return;
     let cancelled = false;
-    commissionRebateApi.partners("", undefined, 0, 500)
-      .then((page) => { if (!cancelled) setEditing(page.items.find((partner) => partner.id === openPartnerId) ?? null); })
-      .catch(() => undefined)
-      .finally(() => { if (!cancelled) onOpened(); });
+    commissionRebateApi.partner(openPartnerId)
+      .then((found) => {
+        if (cancelled) return;
+        if (found) setEditing(found); else toast.error("That partner could not be found.");
+        onOpened();
+      })
+      .catch(() => { if (!cancelled) setLookupFailed(true); });
     return () => { cancelled = true; };
-  }, [openPartnerId, onOpened]);
+  }, [openPartnerId, lookupAttempt, onOpened, toast]);
 
   const changed = () => {
     list.reload();
+    onChanged();
+  };
+  // A status change can take the row out of the filtered list, which may empty the last page.
+  const statusChanged = () => {
+    list.afterDelete();
     onChanged();
   };
 
@@ -130,6 +141,9 @@ export function PartnersList({ adding, onAddClose, onChanged, openPartnerId, onO
         onChange={(changes: FilterValues) => setStatus(changes.status ?? "")}
         onReset={() => { setSearch(""); setStatus(DEFAULT_STATUS); }}
       />
+      {lookupFailed && openPartnerId !== null && (
+        <LoadError message="That partner could not be opened." onRetry={() => { setLookupFailed(false); setLookupAttempt((attempt) => attempt + 1); }} />
+      )}
       {list.error && <LoadError message="Partners could not be loaded." onRetry={list.reload} />}
       {!failedEmpty && (
         <DataTable
@@ -152,7 +166,7 @@ export function PartnersList({ adding, onAddClose, onChanged, openPartnerId, onO
           onSaved={changed}
         />
       )}
-      <PartnerStatusDialogs action={statusAction} onClose={() => setStatusAction(null)} onChanged={changed} />
+      <PartnerStatusDialogs action={statusAction} onClose={() => setStatusAction(null)} onChanged={statusChanged} />
       <BottomSheet open={menuFor !== null} onClose={() => setMenuFor(null)} title={menuFor ? `${menuFor.name} · ${menuFor.internalCode}` : ""} footer={null}>
         {menuFor && menuItem && (
           <button

@@ -15,6 +15,7 @@ vi.mock("../features/commissionRebates/api.ts", () => ({
     commissions: vi.fn(),
     rebates: vi.fn(),
     partners: vi.fn(),
+    partner: vi.fn(),
     savePartner: vi.fn(),
     partnerStatus: vi.fn(),
   },
@@ -525,20 +526,53 @@ describe("Add and edit a partner", () => {
     expect(body).toMatchObject({ name: "Junaid Riaz", internalCode: "101-A", concurrencyToken: "tok-4", bankName: "Meezan Bank", iban: null });
   });
 
-  it("opens that partner's Edit popup from ?partner=, even when it is not on the first page, and drops the parameter", async () => {
-    api.partners.mockImplementation(async (_search, isActive) =>
-      isActive === undefined ? page([partner(), partner({ id: 9, name: "Far Away", internalCode: "PTR-0009" })]) : page([partner()]));
+  it("opens exactly the partner named by ?partner=, wherever it is in the directory, and drops the parameter", async () => {
+    api.partner.mockResolvedValue(partner({ id: 9, name: "Far Away", internalCode: "PTR-0009" }));
     open("/finance/commissions-rebates?tab=partners&partner=9");
     const dialog = within(await screen.findByRole("dialog"));
     expect((dialog.getByLabelText(/^Name/) as HTMLInputElement).value).toBe("Far Away");
+    expect(api.partner.mock.calls[0]![0]).toBe(9);
     await waitFor(() => expect(here()).toBe("/finance/commissions-rebates?tab=partners"));
   });
 
-  it("ignores a ?partner= that matches nobody", async () => {
+  it("says so, and drops the parameter, when ?partner= matches nobody", async () => {
+    api.partner.mockResolvedValue(null);
     open("/finance/commissions-rebates?tab=partners&partner=999");
-    await screen.findAllByText("ali");
+    expect((await screen.findByRole("alert")).textContent).toContain("That partner could not be found.");
     await waitFor(() => expect(here()).toBe("/finance/commissions-rebates?tab=partners"));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps ?partner= and offers Try again when the lookup fails", async () => {
+    api.partner.mockRejectedValueOnce(new Error("down")).mockResolvedValueOnce(partner({ id: 9, name: "Far Away" }));
+    open("/finance/commissions-rebates?tab=partners&partner=9");
+    expect(await screen.findByText("That partner could not be opened.")).toBeTruthy();
+    expect(here()).toBe("/finance/commissions-rebates?tab=partners&partner=9");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Try again" })[0]!);
+    const dialog = within(await screen.findByRole("dialog"));
+    expect((dialog.getByLabelText(/^Name/) as HTMLInputElement).value).toBe("Far Away");
+    await waitFor(() => expect(here()).toBe("/finance/commissions-rebates?tab=partners"));
+    expect(screen.queryByText("That partner could not be opened.")).toBeNull();
+  });
+
+  it("will not save an email address that is not one, and keeps what was typed", async () => {
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Add partner" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText(/^Name/), { target: { value: "Mail Test" } });
+    fireEvent.change(dialog.getByLabelText(/^Email/), { target: { value: "not-an-email" } });
+    fireEvent.click(saveButton());
+    expect(await dialog.findByText("Enter a valid email address.")).toBeTruthy();
+    expect(api.savePartner).not.toHaveBeenCalled();
+
+    fireEvent.change(dialog.getByLabelText(/^Email/), { target: { value: "finance@example.com" } });
+    expect(dialog.queryByText("Enter a valid email address.")).toBeNull();
+    api.savePartner.mockResolvedValue(partner());
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(api.savePartner).toHaveBeenCalledTimes(1));
+    expect(api.savePartner.mock.calls[0]![0]).toMatchObject({ email: "finance@example.com" });
   });
 });
 
@@ -559,16 +593,43 @@ describe("Deactivate and reactivate a partner", () => {
     const dialog = within(await screen.findByRole("dialog"));
     expect(dialog.getByText("Deactivate ali?")).toBeTruthy();
     expect(dialog.getByText("They can't get new commissions, and their pending commissions can't be paid or changed until they are reactivated.")).toBeTruthy();
-    fireEvent.click(dialog.getByRole("button", { name: "Deactivate" }));
-    expect(await dialog.findByText("Enter the reason.")).toBeTruthy();
+    const confirm = () => dialog.getByRole("button", { name: "Deactivate" }) as HTMLButtonElement;
+    expect(confirm().disabled).toBe(true);
+    // No length limit is added for this reason.
+    expect(dialog.getByLabelText(/Reason/).getAttribute("maxlength")).toBeNull();
+    fireEvent.change(dialog.getByLabelText(/Reason/), { target: { value: "   " } });
+    expect(confirm().disabled).toBe(true);
     expect(api.partnerStatus).not.toHaveBeenCalled();
 
     fireEvent.change(dialog.getByLabelText(/Reason/), { target: { value: "Left the business" } });
-    fireEvent.click(dialog.getByRole("button", { name: "Deactivate" }));
+    expect(confirm().disabled).toBe(false);
+    fireEvent.click(confirm());
     await waitFor(() => expect(api.partnerStatus).toHaveBeenCalledWith(4, { isActive: false, reason: "Left the business", concurrencyToken: "tok-4" }));
     expect(await screen.findByText("ali deactivated.")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(api.summary.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("steps back a page when deactivating the only partner on the last page empties it", async () => {
+    let deactivated = false;
+    api.partners.mockImplementation(async (_search, _active, skip) => {
+      if (skip === 0) return page(Array.from({ length: 20 }, (_, index) => partner({ id: 100 + index, name: `P${index}`, internalCode: `PTR-${index}` })), deactivated ? 20 : 21);
+      return deactivated ? page([], 20) : page([partner({ id: 4, name: "Last One" })], 21);
+    });
+    api.partnerStatus.mockImplementation(async () => { deactivated = true; return partner({ isActive: false }); });
+    open();
+    await screen.findAllByText("P0");
+    fireEvent.click(screen.getByRole("button", { name: "Page 2" }));
+    await screen.findAllByText("Last One");
+    await menu("Last One");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Deactivate" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText(/Reason/), { target: { value: "Gone" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Deactivate" }));
+
+    expect((await screen.findAllByText("P0")).length).toBeGreaterThan(0);
+    expect(lastCall(api.partners)[2]).toBe(0);
+    expect(screen.queryByText("Last One")).toBeNull();
   });
 
   it("shows a refusal inside the Deactivate popup and keeps what was typed", async () => {

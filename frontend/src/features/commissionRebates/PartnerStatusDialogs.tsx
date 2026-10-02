@@ -31,6 +31,8 @@ export function PartnerStatusDialogs({ action, onClose, onChanged }: Props) {
         title={`Deactivate ${partner.name}?`}
         message="They can't get new commissions, and their pending commissions can't be paid or changed until they are reactivated."
         confirmLabel="Deactivate"
+        maxLength={null}
+        needsReason
         keyPrefix={`partner-deactivate-${partner.id}`}
         onConfirm={async (reason) => {
           await commissionRebateApi.partnerStatus(partner.id, { isActive: false, reason, concurrencyToken: partner.concurrencyToken });

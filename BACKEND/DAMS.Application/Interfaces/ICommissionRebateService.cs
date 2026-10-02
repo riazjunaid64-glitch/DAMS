@@ -16,6 +16,7 @@ namespace DAMS.Application.Interfaces
         Task<CommissionRebateSummaryDto> GetSummaryAsync(CancellationToken cancellationToken = default);
         Task<PagedResult<ThirdPartyPartnerDto>> GetPartnersAsync(string? search, bool? isActive, int skip, int take,
             bool includeTotal = false, CancellationToken cancellationToken = default);
+        Task<ThirdPartyPartnerDto> GetPartnerByIdAsync(int id, CancellationToken cancellationToken = default);
         Task<ThirdPartyPartnerDto> CreatePartnerAsync(SaveThirdPartyPartnerDto dto, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default);
         Task<ThirdPartyPartnerDto> UpdatePartnerAsync(int id, SaveThirdPartyPartnerDto dto, FinancialWorkflowActor actor,

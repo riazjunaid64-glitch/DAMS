@@ -11,6 +11,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -281,6 +282,58 @@ public sealed class CommissionRebateTests
                 Name = "Code Needed", PartnerType = "Broker", InternalCode = "  ", ConcurrencyToken = added.ConcurrencyToken
             }, Actor));
         Assert.Contains("Internal code is required", error.Message);
+    }
+
+    [Fact]
+    public async Task APartnerCanBeReadById_AndAMissingOneIsNotFound()
+    {
+        await using var harness = await Harness.Create();
+        var partner = await harness.Service.GetPartnerByIdAsync(harness.PartnerId);
+        Assert.Equal("ABC Broker", partner.Name);
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => harness.Service.GetPartnerByIdAsync(99_999));
+    }
+
+    /// <summary>Two partners added at once can be handed the same next code. The loser must take the next free one.</summary>
+    [Fact]
+    public async Task AMadeCodeThatLosesARace_IsRegeneratedInsteadOfFailing()
+    {
+        var database = Guid.NewGuid().ToString();
+        var rival = new CollideOnce(database);
+        await using var context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase(database).AddInterceptors(rival).Options);
+        var service = new CommissionRebateService(context, new FinanceAccountService(context), new MemoryEvidenceStorage());
+
+        var added = await service.CreatePartnerAsync(new SaveThirdPartyPartnerDto { Name = "Late Arrival", PartnerType = "Broker" }, Actor);
+
+        Assert.True(rival.Fired);
+        Assert.Equal("PTR-0002", added.InternalCode);
+        Assert.Equal(2, context.ThirdPartyPartners.Count());
+    }
+
+    [Fact]
+    public async Task ATypedCodeThatCollides_IsStillRefused_NotSilentlyChanged()
+    {
+        await using var harness = await Harness.Create();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.CreatePartnerAsync(
+            new SaveThirdPartyPartnerDto { Name = "Same Code", PartnerType = "Broker", InternalCode = "abc-1" }, Actor));
+        Assert.Contains("internal code already exists", error.Message);
+    }
+
+    /// <summary>Takes the code the service is about to use through another context, then reports the unique-index failure.</summary>
+    private sealed class CollideOnce(string database) : SaveChangesInterceptor
+    {
+        public bool Fired { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Fired) return result;
+            Fired = true;
+            await using var other = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(database).Options);
+            other.ThirdPartyPartners.Add(new ThirdPartyPartner { Name = "Won The Race", PartnerType = "Broker", InternalCode = "PTR-0001", IsActive = true });
+            await other.SaveChangesAsync(cancellationToken);
+            throw new DbUpdateException("Cannot insert duplicate key row in object 'ThirdPartyPartners'.");
+        }
     }
 
     [Fact]

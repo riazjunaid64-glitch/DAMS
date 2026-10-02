@@ -29,6 +29,10 @@ namespace DAMS.Api.Controllers
             CancellationToken cancellationToken = default) =>
             Run(() => _service.GetPartnersAsync(search, isActive, skip, take, includeTotal, cancellationToken));
 
+        [HttpGet("partners/{id:int}")]
+        public Task<IActionResult> Partner(int id, CancellationToken cancellationToken) =>
+            Run(() => _service.GetPartnerByIdAsync(id, cancellationToken));
+
         [HttpPost("partners")]
         public Task<IActionResult> CreatePartner([FromBody] SaveThirdPartyPartnerDto dto, CancellationToken cancellationToken) =>
             Run(() => _service.CreatePartnerAsync(dto, Actor(), cancellationToken));

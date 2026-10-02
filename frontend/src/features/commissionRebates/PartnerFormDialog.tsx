@@ -25,6 +25,7 @@ const fieldsOf = (partner: Partner): Fields => ({
 
 const optional = (label: string): ReactNode => <>{label} <span className="font-normal text-ink-muted">(optional)</span></>;
 const orNull = (value: string) => value.trim() || null;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -56,14 +57,15 @@ export function PartnerFormDialog({ partner, onClose, onSaved }: Props) {
   const [fields, setFields] = useState<Fields>(() => (partner ? fieldsOf(partner) : BLANK));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | undefined>();
   const set = (changes: Partial<Fields>) => setFields((current) => ({ ...current, ...changes }));
-  const text = (key: keyof Fields, label: ReactNode, maxLength: number, extra: { required?: boolean; type?: string; placeholder?: string } = {}) => (
+  const text = (key: keyof Fields, label: ReactNode, maxLength: number, extra: { required?: boolean; type?: string; placeholder?: string; error?: string } = {}) => (
     <TextField
       label={label}
       maxLength={maxLength}
       disabled={saving}
       value={fields[key]}
-      onChange={(event) => set({ [key]: event.target.value })}
+      onChange={(event) => { set({ [key]: event.target.value }); if (key === "email") setEmailError(undefined); }}
       {...extra}
     />
   );
@@ -73,6 +75,10 @@ export function PartnerFormDialog({ partner, onClose, onSaved }: Props) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (saving || !ready) return;
+    if (fields.email.trim() && !EMAIL.test(fields.email.trim())) {
+      setEmailError("Enter a valid email address.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -136,7 +142,7 @@ export function PartnerFormDialog({ partner, onClose, onSaved }: Props) {
           </div>
           <div className={pair}>
             {text("phone", optional("Phone"), 50, { type: "tel" })}
-            {text("email", optional("Email"), 200, { type: "email" })}
+            {text("email", optional("Email"), 200, { type: "email", error: emailError })}
           </div>
           <TextArea label={optional("Address")} rows={3} maxLength={500} disabled={saving} value={fields.address} onChange={(event) => set({ address: event.target.value })} />
         </Group>

@@ -20,6 +20,13 @@ export const commissionRebateApi = {
     const q = new URLSearchParams({skip:String(skip),take:String(take),includeTotal:"true"}); if(search)q.set("search",search); if(isActive!==undefined)q.set("isActive",String(isActive));
     return json<PagedResult<Partner>>(`/partners?${q}`, {signal});
   },
+  /** One partner by id, or null when there is no such partner (a stale link). */
+  partner: async (id:number, signal?:AbortSignal) => {
+    const response = await api(`${root}/partners/${id}`, {signal});
+    if (response.status === 404) return null;
+    if (!response.ok) throw await apiError(response, "The partner could not be loaded.");
+    return await response.json() as Partner;
+  },
   savePartner: (body:unknown, id?:number) => json<Partner>(id?`/partners/${id}`:"/partners", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
   partnerStatus: (id:number, body:unknown) => json<Partner>(`/partners/${id}/status`, {method:"PATCH",body:JSON.stringify(body)}),
   commissions: (status="", skip=0, take=20, signal?:AbortSignal) => { const q=new URLSearchParams({skip:String(skip),take:String(take),includeTotal:"true"});if(status)q.set("status",status);return json<PagedResult<Commission>>(`/commissions?${q}`, {signal}); },
