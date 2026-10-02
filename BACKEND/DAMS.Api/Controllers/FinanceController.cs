@@ -120,11 +120,11 @@ namespace DAMS.Api.Controllers
                 "totalexpenses" => Ok(await _financeService.GetCostBreakdownPageAsync(projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
                 // A deposit belongs to a booking, not to a bank account — so an account filter has
                 // nothing to say about it, exactly as with outstanding balances.
-                "customerdeposits" when accountId.HasValue || unassigned => Ok(new PagedResult<CustomerDepositLineDto>()),
+                "customerdeposits" when accountId.HasValue || unassigned => Ok(EmptyAccountPage<CustomerDepositLineDto>()),
                 "customerdeposits" => Ok(await _financeService.GetCustomerDepositPageAsync(projectId, to, skip, take, cancellationToken)),
-                "outstanding" when accountId.HasValue || unassigned => Ok(new PagedResult<OutstandingLineDto>()),
+                "outstanding" when accountId.HasValue || unassigned => Ok(EmptyAccountPage<OutstandingLineDto>()),
                 "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take, cancellationToken)),
-                "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
+                "overdue" when accountId.HasValue || unassigned => Ok(EmptyAccountPage<OverdueLineDto>()),
                 "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take, cancellationToken)),
                 // No Net Profit for a single account, so no Net Profit drill-down either. A
                 // recognised sale moves no cash and belongs to no bank, so this list would show the
@@ -179,6 +179,12 @@ namespace DAMS.Api.Controllers
                 return BadRequest(new { message = ex.Message });
             }
         }
+
+        /// <summary>
+        /// Deposits, outstanding and overdue belong to bookings, not to a bank account. An account
+        /// filter answers with an empty page and a zero total so the client can still page it.
+        /// </summary>
+        private static PagedResult<T> EmptyAccountPage<T>() => new() { TotalCount = 0 };
 
         private static bool TryParseAccount(string? value, out int? accountId, out bool unassigned)
         {

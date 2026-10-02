@@ -78,3 +78,30 @@ export async function fetchFinanceDashboard<TSummary>(
     },
   };
 }
+
+/**
+ * The Finance home cards. The page no longer draws the trend or the distribution, so it asks
+ * `/api/Finance/summary` for the same filters the dashboard would have used, and nothing else.
+ * `/api/Finance/dashboard` stays for anything that still needs the charts.
+ */
+export async function fetchFinanceSummary<TSummary>(
+  filters: FinanceDashboardFilters,
+  signal?: AbortSignal,
+): Promise<TSummary> {
+  const invalid = financeRangeError(filters.from, filters.to);
+  if (invalid) throw new Error(invalid);
+
+  const params = new URLSearchParams();
+  if (filters.projectId) params.set("projectId", filters.projectId);
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  if (filters.account) params.set("account", filters.account);
+
+  const query = params.toString();
+  const res = await api(`/api/Finance/summary${query ? `?${query}` : ""}`, { signal });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(body?.message ?? `Summary request failed (${res.status}).`);
+  }
+  return await res.json() as TSummary;
+}

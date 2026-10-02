@@ -1,4 +1,4 @@
-export type FinancePeriodPreset = "today" | "month" | "year" | "lastYear" | "all" | "custom";
+export type FinancePeriodPreset = "today" | "month" | "lastMonth" | "year" | "lastYear" | "all" | "custom";
 
 /**
  * Today's date in Pakistan, as a `yyyy-mm-dd` value for a date input.
@@ -47,6 +47,12 @@ export function buildPeriodRange(
       const to = new Date(now.getFullYear(), now.getMonth() + 1, 0);
       return { from: fmtLocal(from), to: fmtLocal(to) };
     }
+    case "lastMonth": {
+      // The previous calendar month, Pakistan time. January wraps to December of the prior year.
+      const from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const to = new Date(now.getFullYear(), now.getMonth(), 0);
+      return { from: fmtLocal(from), to: fmtLocal(to) };
+    }
     case "year": {
       const { from, toExclusive } = financialYearWindow(now, startMonth ?? 7);
       const to = new Date(toExclusive.getFullYear(), toExclusive.getMonth(), 0);
@@ -69,6 +75,7 @@ export function buildPeriodRange(
 const PRESET_NAMES: Record<FinancePeriodPreset, string> = {
   today: "Today",
   month: "This Month",
+  lastMonth: "Last Month",
   year: "This Year",
   lastYear: "Last Year",
   all: "All",
@@ -102,7 +109,7 @@ export function financePeriodLabel(
 
   // A calendar month is the same month wherever the financial year starts, so this one can always
   // be stated. The argument is accepted and ignored.
-  if (preset === "month") {
+  if (preset === "month" || preset === "lastMonth") {
     return `${name} (${monthAndYear(parseLocal(buildPeriodRange(preset, 1, now).from))})`;
   }
   if (preset !== "year" && preset !== "lastYear") return name;

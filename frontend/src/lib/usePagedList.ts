@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_PAGE_SIZE } from "../components/ui/pageItems.ts";
 import { useIsPhone } from "../components/ui/useMediaQuery.ts";
-import { isCurrentRowsRequest } from "./usePaginatedRows.ts";
+
+/** A response may update the table only while it is both the newest request and still wanted. */
+export function isCurrentRowsRequest(
+  requestId: number,
+  currentRequestId: number,
+  signal: AbortSignal,
+): boolean {
+  return requestId === currentRequestId && !signal.aborted;
+}
 
 export type PagedListQuery = {
   /** 1-based page. Desktop asks for one page; a phone delete may ask for the pages loaded so far. */
@@ -32,13 +40,15 @@ export type UsePagedListResult<T> = {
   loading: boolean;
   loadingMore: boolean;
   error: string | null;
-  /** 1-based page on desktop; how many pages have been appended on a phone. */
+  /** 1-based page the current rows belong to. It changes only after that page loads. */
   page: number;
   setPage: (page: number) => void;
   loadMore: () => void;
   /** Refetches. If the current page is now empty and it is not the first, steps back one page. */
   afterDelete: () => void;
   reload: () => void;
+  /** The query the current rows belong to. It lags `queryKey` while a new filter is loading. */
+  rowsKey: string;
   hasMore: boolean;
   /** Props for the shared Pagination. */
   pagination: { page: number; onPageChange: (page: number) => void; totalCount?: number; pageSize: number };
@@ -54,6 +64,8 @@ type Request = {
   /** Captured with the request so a layout change refetches without setting state inside the effect. */
   phone: boolean;
   pageSize: number;
+  /** Phone refresh of every page already on screen: skip 0, take page × page size, then replace. */
+  cover: boolean;
 };
 
 /**
@@ -68,8 +80,13 @@ export function pageAfterEmptyDelete(page: number, itemsOnPage: number): number 
  * Page number + filters, one request at a time.
  *
  * Desktop replaces the rows for the page. A phone appends. A filter change (a new `queryKey`)
- * goes back to page 1. Answers that arrive late are ignored — the same rule as
- * `isCurrentRowsRequest` in usePaginatedRows.
+ * goes back to page 1 but leaves the rows on screen, with `loading` set, until the new page
+ * arrives — the table shows its refreshing state instead of going blank. A failed refresh
+ * keeps those rows, `rowsKey`, and `rowsPage`, and sets `error`. Pagination stays on the
+ * page those rows belong to until a response replaces them. A phone reload refetches the
+ * whole loaded window (`skip` 0, `take` rowsPage × page size) and replaces the list with
+ * that result. A failed Load more is retried as the same append. Answers that arrive late
+ * are ignored (`isCurrentRowsRequest`).
  */
 export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_SIZE }: UsePagedListOptions<T>): UsePagedListResult<T> {
   const isPhone = useIsPhone();
@@ -79,8 +96,10 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   }, [fetchPage]);
 
   const [activeKey, setActiveKey] = useState(queryKey);
-  const [request, setRequest] = useState<Request>({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize });
+  const [request, setRequest] = useState<Request>({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize, cover: false });
   const [rows, setRows] = useState<T[]>([]);
+  const [rowsKey, setRowsKey] = useState(queryKey);
+  const [rowsPage, setRowsPage] = useState(1);
   const [total, setTotal] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -90,15 +109,12 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
 
   if (activeKey !== queryKey) {
     setActiveKey(queryKey);
-    setRequest({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize });
-    setRows([]);
-    setTotal(null);
-    setHasMore(false);
+    setRequest({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize, cover: false });
     setError(null);
     setLoading(true);
     setLoadingMore(false);
   } else if (request.phone !== isPhone || request.pageSize !== pageSize) {
-    setRequest({ ...request, append: false, refresh: request.refresh + 1, intent: "load", phone: isPhone, pageSize });
+    setRequest({ ...request, append: false, cover: false, refresh: request.refresh + 1, intent: "load", phone: isPhone, pageSize });
     setLoading(true);
     setLoadingMore(false);
   }
@@ -106,8 +122,8 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   useEffect(() => {
     const id = ++reqIdRef.current;
     const controller = new AbortController();
-    const { page, append, intent, phone, pageSize: takeSize } = request;
-    const covering = intent === "delete" && phone;
+    const { page, append, intent, phone, pageSize: takeSize, cover } = request;
+    const covering = (intent === "delete" && phone) || cover;
     const skip = covering ? 0 : (page - 1) * takeSize;
     const take = covering ? page * takeSize : takeSize;
 
@@ -120,12 +136,14 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
           if (nextPage !== page) {
             setLoading(true);
             setRequest((current) => current.page === page && current.intent === "delete"
-              ? { ...current, page: nextPage, append: false, refresh: current.refresh + 1, intent: "load" }
+              ? { ...current, page: nextPage, append: false, cover: false, refresh: current.refresh + 1, intent: "load" }
               : current);
             return;
           }
         }
         setRows((prev) => (append ? [...prev, ...items] : items));
+        setRowsKey(activeKey);
+        setRowsPage(page);
         setTotal(result.totalCount ?? null);
         setHasMore(Boolean(result.hasMore) || (result.totalCount != null && skip + items.length < result.totalCount));
         setError(null);
@@ -134,9 +152,9 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
       .catch((caught: unknown) => {
         if (!isCurrentRowsRequest(id, reqIdRef.current, controller.signal)) return;
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setError("Unable to load rows.");
+        const message = caught instanceof Error && caught.message.trim() ? caught.message : "Unable to load rows.";
+        setError(message);
         setLoading(false);
-        if (!append) setRows([]);
       })
       .finally(() => {
         if (id === reqIdRef.current) setLoadingMore(false);
@@ -148,7 +166,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   const setPage = useCallback((page: number) => {
     setLoading(true);
     setLoadingMore(false);
-    setRequest((current) => ({ ...current, page, append: false, refresh: current.refresh + 1, intent: "load" }));
+    setRequest((current) => ({ ...current, page, append: false, cover: false, refresh: current.refresh + 1, intent: "load" }));
   }, []);
 
   const loadMore = useCallback(() => {
@@ -161,6 +179,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
       ...current,
       page: current.page + 1,
       append: current.phone,
+      cover: false,
       refresh: current.refresh + 1,
       intent: "load",
     }));
@@ -169,31 +188,44 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   const reload = useCallback(() => {
     setLoading(true);
     setLoadingMore(false);
-    setRequest((current) => ({ ...current, append: false, refresh: current.refresh + 1, intent: "load" }));
-  }, []);
+    setRequest((current) => {
+      // Load more moved the request ahead of the rows still on screen, then failed.
+      // Try again fetches that same page and appends it.
+      if (current.phone && current.append && current.page > rowsPage) {
+        return { ...current, append: true, cover: false, refresh: current.refresh + 1, intent: "load" };
+      }
+      // A phone refresh asks for every page already loaded, then replaces the list.
+      if (current.phone && current.page === rowsPage && rowsPage > 1) {
+        return { ...current, page: rowsPage, append: false, cover: true, refresh: current.refresh + 1, intent: "load" };
+      }
+      return { ...current, append: false, cover: false, refresh: current.refresh + 1, intent: "load" };
+    });
+  }, [rowsPage]);
 
   const afterDelete = useCallback(() => {
     setLoading(true);
     setLoadingMore(false);
-    setRequest((current) => ({ ...current, append: false, refresh: current.refresh + 1, intent: "delete" }));
+    setRequest((current) => ({ ...current, append: false, cover: false, refresh: current.refresh + 1, intent: "delete" }));
   }, []);
 
+  const switching = activeKey !== queryKey;
   const loadMoreTotal = total != null ? total : hasMore ? rows.length + pageSize : rows.length;
 
   return {
     rows,
     total,
-    loading,
-    loadingMore,
-    error,
-    page: request.page,
+    loading: switching || loading,
+    loadingMore: switching ? false : loadingMore,
+    error: switching ? null : error,
+    page: rowsPage,
     setPage,
     loadMore,
     afterDelete,
     reload,
+    rowsKey,
     hasMore,
     pagination: {
-      page: request.page,
+      page: rowsPage,
       onPageChange: setPage,
       totalCount: total ?? undefined,
       pageSize,
@@ -202,7 +234,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
       shown: rows.length,
       total: loadMoreTotal,
       onLoadMore: loadMore,
-      loading: loadingMore,
+      loading: switching ? false : loadingMore,
     },
   };
 }

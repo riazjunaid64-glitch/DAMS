@@ -422,10 +422,12 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         var firstPage = await finance.GetCustomerDepositPageAsync(null, Feb, 0, 2);
         Assert.Equal(2, firstPage.Items.Count);
         Assert.True(firstPage.HasMore);
+        Assert.Equal(3, firstPage.TotalCount);
         Assert.Equal(500_000m, firstPage.Items[0].DepositBalance); // ordered by size
         var secondPage = await finance.GetCustomerDepositPageAsync(null, Feb, 2, 2);
         Assert.Single(secondPage.Items);
         Assert.False(secondPage.HasMore);
+        Assert.Equal(3, secondPage.TotalCount);
 
         var byProject = await finance.GetCustomerDepositPageAsync(otherProject.ProjectId, Feb, 0, 20);
         Assert.Equal(100_000m, Assert.Single(byProject.Items).DepositBalance);

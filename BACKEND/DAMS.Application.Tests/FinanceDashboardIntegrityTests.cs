@@ -47,6 +47,7 @@ public sealed class FinanceDashboardIntegrityTests
         Assert.Equal(summary.TotalExpenses, breakdown.Items.Sum(i => i.Amount));
         Assert.False(breakdown.HasMore);
         Assert.Equal(8, breakdown.Items.Count);
+        Assert.Equal(8, breakdown.TotalCount);
 
         // Two kinds only, and reversals are the negative one — a row the reader has to know to
         // subtract by hand is a row that will be added instead.
@@ -470,6 +471,71 @@ public sealed class FinanceDashboardIntegrityTests
             Assert.True(buckets[i].From <= buckets[i].To, $"bucket {buckets[i].Label} ends before it starts");
             if (i > 0) Assert.Equal(buckets[i - 1].To.AddDays(1), buckets[i].From);
         }
+    }
+
+    /// <summary>
+    /// Revenue and overdue fill TotalCount on every page, including a later page and the empty
+    /// answer an account filter gets for a booking list.
+    /// </summary>
+    [Fact]
+    public async Task RevenueAndOverdueLists_ReportTotalCount_OnEveryPage()
+    {
+        await using var context = Context();
+        var world = await SeedEveryCostComponentAsync(context);
+        var booking = await context.Bookings.SingleAsync();
+        context.ManualRevenues.Add(new ManualRevenue
+        {
+            FinanceAccountId = world.BankId,
+            Amount = 25_000m,
+            RevenueType = "Transfer Charges",
+            RevenueTypeName = "Transfer Charges",
+            Date = new DateTime(2026, 8, 10)
+        });
+        context.Installments.AddRange(
+            new Installment
+            {
+                BookingId = booking.Id, SequenceNumber = 1, Type = InstallmentType.Regular,
+                DueDate = PakistanTime.Today.AddDays(-40), Amount = 100_000m, Status = InstallmentStatus.Pending
+            },
+            new Installment
+            {
+                BookingId = booking.Id, SequenceNumber = 2, Type = InstallmentType.Regular,
+                DueDate = PakistanTime.Today.AddDays(-10), Amount = 100_000m, Status = InstallmentStatus.Pending
+            });
+        await context.SaveChangesAsync();
+        var service = Finance(context);
+
+        var first = await service.GetRevenuePageAsync(null, PeriodStart, PeriodEnd, 0, 1);
+        Assert.Single(first.Items);
+        Assert.True(first.HasMore);
+        Assert.Equal(2, first.TotalCount);
+        var second = await service.GetRevenuePageAsync(null, PeriodStart, PeriodEnd, 1, 1);
+        Assert.Single(second.Items);
+        Assert.False(second.HasMore);
+        Assert.Equal(2, second.TotalCount);
+        Assert.StartsWith(first.Items[0].Source + ":", first.Items[0].RowId);
+        Assert.StartsWith(second.Items[0].Source + ":", second.Items[0].RowId);
+        Assert.NotEqual(first.Items[0].RowId, second.Items[0].RowId);
+
+        var overdue = await service.GetOverduePageAsync(null, 0, 1);
+        Assert.Single(overdue.Items);
+        Assert.True(overdue.HasMore);
+        Assert.Equal(2, overdue.TotalCount);
+        var overdueRest = await service.GetOverduePageAsync(null, 1, 1);
+        Assert.Single(overdueRest.Items);
+        Assert.Equal(2, overdueRest.TotalCount);
+
+        var controller = new FinanceController(service);
+        var hidden = Assert.IsType<OkObjectResult>(await controller.GetRows(
+            "overdue", null, PeriodStart, PeriodEnd, world.BankId.ToString(), 0, 20));
+        var empty = Assert.IsType<PagedResult<OverdueLineDto>>(hidden.Value);
+        Assert.Empty(empty.Items);
+        Assert.Equal(0, empty.TotalCount);
+        Assert.False(empty.HasMore);
+
+        var deposits = Assert.IsType<OkObjectResult>(await controller.GetRows(
+            "customerDeposits", null, PeriodStart, PeriodEnd, "unassigned", 0, 20));
+        Assert.Equal(0, Assert.IsType<PagedResult<CustomerDepositLineDto>>(deposits.Value).TotalCount);
     }
 
     private sealed record CostWorld(int ExpenseId, int BankId);

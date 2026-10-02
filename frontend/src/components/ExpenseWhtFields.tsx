@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { NumberField, TextArea } from "./ui";
 import { calculateWht } from "../features/finance/whtApi.ts";
 import {
   calculationKey,
@@ -13,7 +14,7 @@ import {
 import { formatRs, type WhtCalculation, type WhtFormValue } from "../features/finance/whtTypes.ts";
 
 /**
- * The withholding block, shared by the expense form and the fixed-asset purchase form.
+ * The withholding block, shared by the expense form, the fixed-asset purchase form and Cash with staff.
  *
  * Rate and tax are both editable and kept consistent with each other: editing the rate recomputes
  * the tax, editing the tax back-computes the rate. Net paid is always derived and never editable,
@@ -34,6 +35,7 @@ export default function ExpenseWhtFields({
   value,
   onChange,
   disabled,
+  onReasonRequired,
 }: {
   categoryId: string;
   vendorId: string;
@@ -46,6 +48,8 @@ export default function ExpenseWhtFields({
   value: WhtFormValue;
   onChange: (next: WhtFormValue) => void;
   disabled?: boolean;
+  /** True while a changed tax has no reason, so the parent can keep Save off. */
+  onReasonRequired?: (required: boolean) => void;
 }) {
   const [preview, setPreview] = useState<WhtCalculation | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,6 +69,12 @@ export default function ExpenseWhtFields({
   // must not demand one either.
   const openedKey = useRef<string | null>(seededKey(value, key));
   const asFiled = showsFiledFigures(openedKey.current, key);
+  const overridden = Boolean(categoryId) && !asFiled && isOverridden(value, preview);
+  const reasonRequired = overridden && value.overrideReason.trim() === "";
+
+  useEffect(() => {
+    onReasonRequired?.(reasonRequired);
+  }, [reasonRequired, onReasonRequired]);
 
   useEffect(() => {
     if (!categoryId || !Number.isFinite(gross) || gross <= 0) {
@@ -103,105 +113,90 @@ export default function ExpenseWhtFields({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoryId, vendorId, gross, date, excludeExpenseId, excludeAssetPurchaseId, key]);
 
-  if (!categoryId) {
-    return (
-      <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-3 text-xs text-[var(--text-muted)]">
-        Choose a managed category to work out withholding tax.
-      </p>
-    );
-  }
+  if (!categoryId) return null;
 
   if (preview && !preview.isWhtApplicable) {
     return (
-      <p className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] px-4 py-3 text-xs text-[var(--text-muted)]">
+      <p className="m-0 text-small text-ink-muted">
         {preview.notice ?? "No withholding tax applies to this category."}
       </p>
     );
   }
 
   const netPaid = deriveNetPaid(grossAmount, value, preview);
-  const overridden = !asFiled && isOverridden(value, preview);
   const differsFromToday = asFiled && isOverridden(value, preview);
+  const section = preview?.taxSection ? `s.${preview.taxSection}` : null;
 
   return (
-    <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4">
-      <div className="flex items-center justify-between">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+    <div className="space-y-3 rounded-card border border-line bg-page p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="m-0 text-sm font-extrabold text-ink">
           Withholding tax
-          {preview?.taxSection && <span className="ml-2 font-normal normal-case">s.{preview.taxSection}</span>}
+          {section && <span className="ml-2 font-bold text-ink-muted">{section}</span>}
         </p>
-        {loading && <span className="text-[11px] text-[var(--text-muted)]">Calculating…</span>}
+        {loading && <span className="text-small text-ink-muted">Calculating…</span>}
       </div>
 
       {failed && (
-        <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+        <p className="m-0 text-small text-warning">
           The tax could not be calculated. Enter the rate and amount by hand, or reopen the form to
           retry — the server recalculates and validates on save either way.
         </p>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-[var(--text-secondary)]">Rate (%)</span>
-          <input
-            type="number" step="0.0001" min="0" max="100" inputMode="decimal"
-            value={value.rate}
-            disabled={disabled}
-            onChange={(e) => onChange(fromRate(value, e.target.value, grossAmount))}
-            className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
-          />
-        </label>
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-[var(--text-secondary)]">Tax withheld (Rs)</span>
-          <input
-            type="number" step="0.01" min="0" inputMode="decimal"
-            value={value.amount}
-            disabled={disabled}
-            onChange={(e) => onChange(fromAmount(value, e.target.value, grossAmount))}
-            className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
-          />
-        </label>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <NumberField
+          label="Rate (%)"
+          decimals={4}
+          value={value.rate}
+          disabled={disabled}
+          onChange={(rate) => {
+            if (rate !== "" && Number(rate) > 100) return;
+            onChange(fromRate(value, rate, grossAmount));
+          }}
+        />
+        <NumberField
+          label="Tax withheld"
+          prefix="Rs"
+          decimals={2}
+          value={value.amount}
+          disabled={disabled}
+          onChange={(amount) => onChange(fromAmount(value, amount, grossAmount))}
+        />
       </div>
 
-      <div className="flex items-baseline justify-between rounded-lg border border-[var(--border)] px-3 py-2.5">
-        <span className="text-xs font-medium text-[var(--text-secondary)]">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-small font-bold text-ink-2">
           Net paid to {capitalised ? "supplier" : "vendor"}
         </span>
-        <span className="text-sm font-bold text-[var(--text-heading)]">{formatRs(netPaid)}</span>
+        <span className="text-sm font-extrabold text-ink">{formatRs(netPaid)}</span>
       </div>
-      <p className="text-[11px] text-[var(--text-muted)]">
-        {capitalised
-          ? `The asset is recorded at the full ${formatRs(Number.isFinite(gross) ? gross : 0)}; only the net leaves the account. The rest is owed to FBR.`
-          : `The expense is recorded at the full ${formatRs(Number.isFinite(gross) ? gross : 0)}; only the net leaves the account. The rest is owed to FBR.`}
-      </p>
 
-      {overridden && (
-        <div className="space-y-2 rounded-lg border border-amber-500/25 bg-amber-500/10 p-3">
-          <p className="text-xs text-amber-300">
-            Changed from the calculated {formatRs(preview!.whtAmount)}
-            {preview!.rate > 0 && ` (${Number(preview!.rate.toFixed(4))}%)`} — a reason is required.
-          </p>
-          <input
+      {overridden && preview && (
+        <div className="space-y-2 rounded-card border border-gold-line bg-gold-soft p-3">
+          <p className="m-0 text-small font-bold text-ink">Worked-out tax was {formatRs(preview.whtAmount)}</p>
+          <TextArea
+            label="Reason for changing the tax"
+            required
+            rows={2}
             value={value.overrideReason}
             disabled={disabled}
-            placeholder="Why does this differ? e.g. figure taken from the vendor invoice"
-            onChange={(e) => onChange({ ...value, overrideReason: e.target.value })}
-            className="w-full rounded-lg border border-amber-500/25 bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none"
+            onChange={(event) => onChange({ ...value, overrideReason: event.target.value })}
           />
         </div>
       )}
 
-      {differsFromToday && (
-        <p className="rounded-lg border border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
-          This is the tax as originally withheld, and it is kept on save. Today's rules would give{" "}
-          {formatRs(preview!.whtAmount)} — filed periods are not restated. Change the amount,
+      {differsFromToday && preview && (
+        <p className="m-0 text-small text-ink-muted">
+          This is the tax as originally withheld, and it is kept on save. Today&apos;s rules would give{" "}
+          {formatRs(preview.whtAmount)} — filed periods are not restated. Change the amount,
           category, vendor or date to recalculate.
         </p>
       )}
 
       {preview?.notice && (
-        <p className={`text-[11px] ${preview.belowThreshold ? "text-sky-300" : "text-[var(--text-muted)]"}`}>
-          {preview.belowThreshold ? "ℹ " : ""}{preview.notice}
+        <p className={`m-0 text-small ${preview.belowThreshold ? "text-info" : "text-ink-muted"}`}>
+          {preview.notice}
         </p>
       )}
     </div>

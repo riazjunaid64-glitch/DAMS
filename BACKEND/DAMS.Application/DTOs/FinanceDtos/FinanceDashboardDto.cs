@@ -108,6 +108,12 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// <summary>"Payment" (automatic) or "Manual Revenue".</summary>
         public string Source { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Stable identity for the row, <c>{Source}:{SortId}</c>. SortId is that source's own
+        /// primary key, so two unit sales on the same day, project and amount stay distinct.
+        /// </summary>
+        public string RowId { get; set; } = string.Empty;
+
         public string? Reference { get; set; }
 
         public string? Description { get; set; }

@@ -24,7 +24,7 @@ export function financeRangeError(from: string, to: string): string | null {
 }
 
 /** Presets a Period filter can show. The page supplies the dates each one covers. */
-export type PeriodPreset = "today" | "month" | "year" | "lastYear" | "custom" | "all";
+export type PeriodPreset = "today" | "month" | "lastMonth" | "year" | "lastYear" | "custom" | "all";
 
 export type PeriodRange = { from: string; to: string };
 
@@ -64,12 +64,13 @@ export function periodSelectOptions(
   const year = rangeFor("year");
   const lastYear = rangeFor("lastYear");
   return [
+    { value: "all", label: "All time" },
     { value: "today", label: "Today" },
     { value: "month", label: "This month" },
+    { value: "lastMonth", label: "Last month" },
     { value: "year", label: yearLabel("This financial year", year, yearReady), disabled: !yearReady || !year.from || !year.to },
     { value: "lastYear", label: yearLabel("Last financial year", lastYear, yearReady), disabled: !yearReady || !lastYear.from || !lastYear.to },
     { value: "custom", label: "Custom" },
-    { value: "all", label: "All time" },
   ];
 }
 
@@ -84,7 +85,7 @@ export function periodPresetForDates(
   rangeFor: (preset: Exclude<PeriodPreset, "custom">) => PeriodRange,
 ): PeriodPreset {
   if (!from && !to) return "all";
-  for (const preset of ["today", "month", ...YEAR_PRESETS] as const) {
+  for (const preset of ["today", "month", "lastMonth", ...YEAR_PRESETS] as const) {
     const range = rangeFor(preset);
     if (range.from && range.to && range.from === from && range.to === to) return preset;
   }

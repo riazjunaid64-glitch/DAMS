@@ -115,6 +115,9 @@ public sealed class FinanceAccountTests
         var summary = await finance.GetSummaryAsync(null, null, null, unassigned: true);
         Assert.Equal(0, summary.AutomaticRevenue); // no recognised sales anywhere
         Assert.Equal(250, summary.ManualRevenue);
+        // Unassigned is not an account, so there is no cash movement to report. Null, not zero:
+        // the screen must not print Rs 0 for a figure the server does not have.
+        Assert.Null(summary.AccountNetMovement);
 
         var rows = await finance.GetRevenuePageAsync(null, null, null, 0, 20, unassigned: true);
         Assert.Single(rows.Items, x => x.Source == "Manual Revenue" && x.FinanceAccountId == null);

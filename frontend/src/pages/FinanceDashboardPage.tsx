@@ -1,2193 +1,650 @@
-import { can } from "../features/access/permissions.ts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
+import { financeApiError, openFinanceAttachment, type FinanceAttachmentInfo, type FinanceRecordKind } from "../api/financeAttachments.ts";
 import type { User } from "../App.tsx";
-import Button from "../lib/Button.tsx";
-import { DatePicker } from "../components/ui";
-import AppSelect from "../lib/AppSelect.tsx";
-import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
-import type { Column } from "../lib/VirtualInfiniteTable.tsx";
-import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
-import { fetchFinanceDashboard, financeRangeError, type FinanceChartData } from "../lib/financeChartData.ts";
-import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods.ts";
-import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency.ts";
-import ShortAmount from "../lib/ShortAmount.tsx";
-import { exactAmount } from "../lib/financeAmounts.ts";
-import FinanceCharts from "../components/FinanceCharts.tsx";
-import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
-import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
-import { useProjects } from "../contexts/projectsContextValue.ts";
-import { listCategories, vendorOptions } from "../features/finance/whtApi.ts";
-import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth.ts";
-import { emptyWht, type ExpenseCategory, type VendorOption, type WhtFormValue } from "../features/finance/whtTypes.ts";
 import {
-  financeApiError,
-  openFinanceAttachment,
-  type FinanceAttachmentInfo,
-  type FinanceRecordKind,
-} from "../api/financeAttachments.ts";
+  Button,
+  FilterBar,
+  IconMore,
+  IconPlus,
+  LoadMore,
+  Notice,
+  PageHeader,
+  Pagination,
+  useIsPhone,
+  useToast,
+  type FilterValues,
+} from "../components/ui";
+import { pageAccess } from "../features/access/permissions.ts";
+import { useProjects } from "../contexts/projectsContextValue.ts";
+import { AssetPurchaseDialog } from "../features/finance/home/AssetPurchaseDialog.tsx";
+import { FinanceDeleteDialog } from "../features/finance/home/delete.tsx";
+import { ExpenseDialog } from "../features/finance/home/ExpenseDialog.tsx";
+import { assetFormFrom, emptyAssetForm, emptyExpenseForm, emptyRevenueForm, expenseFormFrom, revenueFormFrom } from "../features/finance/home/format.ts";
+import { FinanceAddButtons, FinanceLinkRow, FinanceMoreSheet } from "../features/finance/home/links.tsx";
+import { filterAccountLabel } from "../features/finance/home/options.ts";
+import { RevenueDialog } from "../features/finance/home/RevenueDialog.tsx";
+import { FinanceCards, FinanceNotices } from "../features/finance/home/summary.tsx";
+import { FinanceTable } from "../features/finance/home/table.tsx";
+import type {
+  AssetPurchaseFormState,
+  AssetPurchaseLine,
+  CostLine,
+  ExpenseFormState,
+  ExpenseLine,
+  FinanceAccountOption,
+  FinanceRow,
+  FinanceView,
+  FinancialSummary,
+  PendingDelete,
+  RevenueCategory,
+  RevenueFormState,
+} from "../features/finance/home/types.ts";
+import { listCategories, payableSummary, vendorOptions } from "../features/finance/whtApi.ts";
+import type { ExpenseCategory, VendorOption } from "../features/finance/whtTypes.ts";
+import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth.ts";
+import { fetchFinanceSummary } from "../lib/financeChartData.ts";
+import { buildPeriodRange, pakistanToday } from "../lib/financePeriods.ts";
+import { usePagedList, type PagedListQuery } from "../lib/usePagedList.ts";
 
 type Props = { user: User | null };
 
-interface FinanceAccountOption {
-  id: number;
-  name: string;
-  type: number | string;
-  accountHolderName: string;
-  isActive: boolean;
-}
-
-const isStaffFloat = (account: FinanceAccountOption) =>
-  account.type === 10 || account.type === "StaffFloat" || Number(account.type) === 10;
-
-/** A fixed-asset purchase row: what was bought, where the value landed, and what paid for it. */
-interface AssetPurchaseLine {
-  id: number;
-  date: string;
-  projectId: number | null;
-  projectName: string;
-  assetAccountId: number;
-  assetAccountName: string;
-  financeAccountId: number;
-  financeAccountName: string | null;
-  accountHolderName: string | null;
-  itemName: string;
-  category: string;
-  categoryId: number | null;
-  description: string | null;
-  vendor: string | null;
-  vendorId: number | null;
-  /** Gross — what the asset is carried at. Cash paid is `netPaid`. */
-  amount: number;
-  whtAmount: number;
-  whtRate: number;
-  netPaid: number;
-  whtTaxSection: string | null;
-  attachment: FinanceAttachmentInfo | null;
-  concurrencyToken: string;
-}
-
-interface RevenueCategory {
-  id: number;
-  name: string;
-  /** Stable identifier — the name is editable by the client, this is not. */
-  code: string;
-  isActive: boolean;
-}
-
-/** The one revenue head that overlaps a workflow DAMS already runs by itself. See the warning
- *  shown when it is selected. */
-const CANCELLATION_REVENUE_CODE = "cancellation_forfeiture";
-
-interface FinancialSummary {
-  totalRevenue: number;
-  /** Unit sales recognised at possession + amounts retained on cancellation. Not customer cash. */
-  automaticRevenue: number;
-  /** Customer money held but not yet earned, as at the END of the range. A balance, not income. */
-  customerDepositsBalance: number;
-  manualRevenue: number;
-  /** Every cost of the period, including the fixed assets bought in it. */
-  totalExpenses: number;
-  /** The result: totalRevenue − totalExpenses, with the client's fixed-asset rule applied — buying
-   *  an asset spends the money. The same figure the Profit & Loss statement reports for the period.
-   *  NULL while an account filter is applied: a recognised sale belongs to no bank account, so an
-   *  account-filtered subtraction would drop every possession from the revenue side and keep every
-   *  cost. Net Movement is shown in its place. */
-  netProfit: number | null;
-  /** True when a single account (or "unassigned") is selected. Revenue and Expenses then mean
-   *  "recorded against this account", not "the period's revenue and cost". */
-  accountFilterApplied: boolean;
-  whtWithheld: number;
-  /** Fixed assets bought in the period, at cost. A breakdown of totalExpenses, not an addition to
-   *  it — the cost is already inside that total and inside netProfit. */
-  totalAssetPurchases: number;
-  outstandingAmount: number;
-  overdueAmount: number;
-  accountOpeningBalance: number | null;
-  accountCurrentBalance: number | null;
-  accountNetMovement: number | null;
-}
-
-interface RevenueLine {
-  date: string;
-  projectId: number | null;
-  projectName: string;
-  revenueType: string;
-  revenueCategoryId: number | null;
-  amount: number;
-  source: string;
-  reference: string | null;
-  description: string | null;
-  manualRevenueId: number | null;
-  financeAccountId: number | null;
-  financeAccountName: string | null;
-  accountHolderName: string | null;
-  /** Base64 row version. Null on recognised sales and retained cancellations — events, not editable records. */
-  concurrencyToken: string | null;
-  attachment: FinanceAttachmentInfo | null;
-}
-
-interface ExpenseLine {
-  id: number;
-  date: string;
-  projectId: number | null;
-  projectName: string;
-  category: string;
-  categoryId: number | null;
-  /** Gross — the business cost. Cash paid is `netPaid`. */
-  amount: number;
-  whtApplied: boolean;
-  whtRate: number;
-  whtAmount: number;
-  netPaid: number;
-  whtRateOverridden: boolean;
-  whtOverrideReason: string | null;
-  whtTaxSection: string | null;
-  description: string | null;
-  reference: string | null;
-  vendorId: number | null;
-  financeAccountId: number | null;
-  financeAccountName: string | null;
-  accountHolderName: string | null;
-  /** Base64 row version — sent back on update and delete so a stale edit is refused, not applied. */
-  concurrencyToken: string;
-  attachment: FinanceAttachmentInfo | null;
-}
-
-/**
- * One booking's share of the Customer Deposits liability, as at the selected end date.
- * Read-only: possession and cancellation are what clear a deposit, never this screen.
- */
-interface CustomerDepositLine {
-  bookingId: number;
-  bookingReference: string;
-  customerName: string;
-  projectId: number | null;
-  projectName: string;
-  unitNumber: string;
-  bookingStatus: string;
-  netSaleValue: number;
-  customerCashReceived: number;
-  depositBalance: number;
-  recognitionDate: string | null;
-  cancellationDate: string | null;
-}
-
-interface OutstandingLine {
-  bookingReference: string;
-  customerName: string;
-  projectId: number | null;
-  projectName: string;
-  unitNumber: string;
-  agreedSalePrice: number;
-  receivedAmount: number;
-  outstandingAmount: number;
-}
-
-interface OverdueLine {
-  bookingReference: string;
-  customerName: string;
-  projectId: number | null;
-  projectName: string;
-  unitNumber: string;
-  sequenceNumber: number;
-  installmentType: string;
-  dueDate: string;
-  amount: number;
-  paidAmount: number;
-  overdueAmount: number;
-}
-
-interface NetProfitLine {
-  date: string;
-  projectName: string;
-  label: string;
-  /** "revenue" and "expense" together sum to netProfit. A fixed-asset purchase is an expense row. */
-  kind: "revenue" | "expense";
-  amount: number;
-}
-
-/** One component of the Total Expenses card. The signed amounts add up to that card exactly —
- *  the expense table alone cannot, because the card also carries commissions, rebates, customer
- *  credits, loan interest and fixed assets. */
-interface CostLine {
-  date: string;
-  projectName: string;
-  label: string;
-  kind: "cost" | "reduction";
-  amount: number;
-  /** Present only on ordinary expense rows — the ones that can be opened and corrected. */
-  expenseId: number | null;
-  /** Which record drew this row, and which one. Six different things share this list. */
-  source: CostSource;
-  sourceId: number;
-  /** The receipt behind the cost. Only expenses and asset purchases can carry one. */
-  attachment: FinanceAttachmentInfo | null;
-}
-
-type CostSource = "expense" | "assetPurchase" | "commission" | "rebate" | "customerCredit" | "loanInterest";
-
-/**
- * What clicking a breakdown row does. Expenses and asset purchases are ours to edit here; the
- * other four are recorded by another workflow, and the honest thing is to hand the reader over to
- * it rather than offer half an editor. Anything unrecognised stays inert — a row that looks
- * clickable and does nothing is worse than one that never offered.
- */
-const COST_ROW_ACTIONS: Record<CostSource, string> = {
-  expense: "Edit this expense",
-  assetPurchase: "Edit this fixed asset purchase",
-  commission: "Open in Commissions & Rebates",
-  rebate: "Open in Commissions & Rebates",
-  customerCredit: "Open in Commissions & Rebates",
-  loanInterest: "Open in Loans",
-};
-
-type AnyRow = RevenueLine | ExpenseLine | AssetPurchaseLine | CustomerDepositLine | OutstandingLine | OverdueLine | NetProfitLine | CostLine;
-
-type View = "revenue" | "expense" | "totalExpenses" | "assetPurchase" | "customerDeposits" | "netProfit" | "outstanding" | "overdue";
-
-// API view query value for each card view.
-const VIEW_PARAM: Record<View, string> = {
+const VIEW_PARAM: Record<FinanceView, string> = {
   revenue: "revenue",
-  expense: "expense",
   totalExpenses: "totalExpenses",
-  assetPurchase: "assetPurchase",
   customerDeposits: "customerDeposits",
-  netProfit: "netProfit",
-  outstanding: "outstanding",
   overdue: "overdue",
 };
 
-// Ancillary developer revenue (charges NOT auto-captured by booking/installment/possession
-// payments). Grounded in standard Pakistani housing-society / developer charge heads. Only the
-// first entry is used — as the placeholder name on a blank form until a managed category is
-// chosen — so a head DAMS records automatically must not lead this list.
-const REVENUE_TYPES = [
-  "Transfer Charges",
-  "Development Charges",
-  "Possession Charges",
-  "Membership Charges",
-  "Documentation Charges",
-  "NOC / NDC Charges",
-  "Utility Connection Charges",
-  "Parking Charges",
-  "Late Payment Surcharge",
-  "Rental Income",
-  "Commission Income",
-  "Other Income",
-];
+const VIEWS: readonly FinanceView[] = ["revenue", "totalExpenses", "customerDeposits", "overdue"];
 
-// Sentinel used by the Revenue Type <select> to switch into free-text entry.
-const CUSTOM_TYPE = "__custom__";
-
-// Expense heads now come from the managed rate table (Finance ▸ Settings), because each one
-// carries the withholding rate applied to payments under it. Free text stays available for
-// one-off heads — it just carries no tax.
-
-function formatMoney(n: number) {
-  const sign = n < 0 ? "-" : "";
-  // Show paisa when present so rows visibly add up to the totals (whole amounts stay clean).
-  return `${sign}Rs ${Math.abs(n).toLocaleString("en-PK", { maximumFractionDigits: 2 })}`;
+/** The list query starts with the open card. Rows keep that card's columns until a new page replaces them. */
+function viewInQueryKey(queryKey: string): FinanceView | null {
+  const head = queryKey.split("|")[0] as FinanceView;
+  return VIEWS.includes(head) ? head : null;
 }
-
-function formatDate(date: string) {
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return "—";
-  return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-// Every form on this page — revenue, expense and asset purchase — defaults its date from here,
-// and the server judges all three against the Pakistani calendar. See pakistanToday.
-const todayInput = pakistanToday;
-
-// `note` is the small qualifier printed under a card label — the one thing about a figure the
-// number itself cannot say: which period it belongs to. Only the cards that are NOT plain period
-// totals carry one.
-type SummaryCard = {
-  label: string;
-  note?: string;
-  value: number;
-  valueColor: string;
-  underline: string;
-  view: View | null;
-};
-
-type Period = "today" | "month" | "year" | "lastYear" | "all" | "custom";
-
-// Order only — every chip takes its wording from financePeriodLabel, so the range a chip states
-// and the range it applies come from the same place.
-const PERIODS: Exclude<Period, "custom">[] = ["today", "month", "year", "lastYear", "all"];
-
-interface RevenueFormState {
-  id: number | null;
-  /** Base64 row version of the row being edited; "" for a new one. */
-  concurrencyToken: string;
-  projectId: string;
-  financeAccountId: string;
-  amount: string;
-  revenueType: string;
-  revenueCategoryId: string;
-  description: string;
-  reference: string;
-  date: string;
-  attachment: FinanceAttachmentInfo | null;
-  selectedAttachment: File | null;
-  removeAttachment: boolean;
-}
-
-interface ExpenseFormState {
-  id: number | null;
-  /** Base64 row version of the row being edited; "" for a new one. */
-  concurrencyToken: string;
-  projectId: string;
-  financeAccountId: string;
-  amount: string;
-  /** Managed category id, or "" when the head is free text. */
-  categoryId: string;
-  category: string;
-  /** True only for a row recorded before the managed list existed, which may keep its free text. */
-  legacyCategory: boolean;
-  description: string;
-  /** Managed vendor id, or "" when the payee is free text. */
-  vendorId: string;
-  vendor: string;
-  date: string;
-  wht: WhtFormValue;
-  attachment: FinanceAttachmentInfo | null;
-  selectedAttachment: File | null;
-  removeAttachment: boolean;
-}
-
-/**
- * Deliberately close to ExpenseFormState — the brief is that recording a purchase should feel like
- * recording an expense. The two differences are the ones that matter: `assetAccountId` (where the
- * value lands, which an expense has no equivalent of) and `itemName` (what was actually bought, as
- * distinct from the tax head it is classified under).
- */
-interface AssetPurchaseFormState {
-  id: number | null;
-  projectId: string;
-  assetAccountId: string;
-  /**
-   * The destination's name as recorded on the row. Needed because a purchase saved before
-   * construction spend became an expense points at a work-in-progress account, and that account is
-   * no longer offered as a destination — without the name here the select would silently blank it
-   * and the operator would be forced to mis-file a row they only meant to correct.
-   */
-  assetAccountName: string;
-  financeAccountId: string;
-  amount: string;
-  itemName: string;
-  categoryId: string;
-  category: string;
-  description: string;
-  vendorId: string;
-  vendor: string;
-  date: string;
-  wht: WhtFormValue;
-  attachment: FinanceAttachmentInfo | null;
-  selectedAttachment: File | null;
-  removeAttachment: boolean;
-  concurrencyToken: string;
-}
-
-const emptyAssetPurchaseForm = (): AssetPurchaseFormState => ({
-  id: null,
-  projectId: "",
-  assetAccountId: "",
-  assetAccountName: "",
-  financeAccountId: "",
-  amount: "",
-  itemName: "",
-  categoryId: "",
-  category: "",
-  description: "",
-  vendorId: "",
-  vendor: "",
-  date: todayInput(),
-  wht: emptyWht(),
-  attachment: null,
-  selectedAttachment: null,
-  removeAttachment: false,
-  concurrencyToken: "",
-});
-
-const emptyRevenueForm = (): RevenueFormState => ({
-  id: null,
-  concurrencyToken: "",
-  projectId: "",
-  financeAccountId: "",
-  amount: "",
-  revenueType: REVENUE_TYPES[0],
-  revenueCategoryId: "",
-  description: "",
-  reference: "",
-  date: todayInput(),
-  attachment: null,
-  selectedAttachment: null,
-  removeAttachment: false,
-});
-
-const emptyExpenseForm = (): ExpenseFormState => ({
-  id: null,
-  concurrencyToken: "",
-  projectId: "",
-  financeAccountId: "",
-  amount: "",
-  categoryId: "",
-  category: "",
-  legacyCategory: false,
-  description: "",
-  vendorId: "",
-  vendor: "",
-  date: todayInput(),
-  wht: emptyWht(),
-  attachment: null,
-  selectedAttachment: null,
-  removeAttachment: false,
-});
 
 export default function FinanceDashboardPage({ user }: Props) {
+  const access = pageAccess(user?.role, "finance");
+  const allowed = access === "allow";
+  const isPhone = useIsPhone();
   const navigate = useNavigate();
-  const isAdmin = can(user?.role, "finance");
+  const toast = useToast();
   const { projects } = useProjects();
+  const { startMonth, failed: yearFailed } = useFinancialYearStartMonth(allowed);
+  const yearStatus = yearFailed ? "error" : startMonth == null ? "loading" : "ready";
 
-  const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
-  const [assetAccounts, setAssetAccounts] = useState<FinanceAccountOption[]>([]);
-  const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
-  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
-  const [vendors, setVendors] = useState<VendorOption[]>([]);
-  const [assetAccountsLoading, setAssetAccountsLoading] = useState(false);
-  const [revenueCategoriesLoading, setRevenueCategoriesLoading] = useState(false);
-  const [whtLookupsLoading, setWhtLookupsLoading] = useState(false);
-  const [projectId, setProjectId] = useState<string>("");
-  const [accountFilter, setAccountFilter] = useState<string>("");
-  const [fromDate, setFromDate] = useState<string>("");
-  const [toDate, setToDate] = useState<string>("");
-  const [draftProjectId, setDraftProjectId] = useState<string>("");
-  const [draftAccountFilter, setDraftAccountFilter] = useState<string>("");
-  const [draftFromDate, setDraftFromDate] = useState<string>("");
-  const [draftToDate, setDraftToDate] = useState<string>("");
-  // null until the client's configured year start is read back. Nothing that depends on the
-  // financial year may be stated or applied before then — see useFinancialYearStartMonth.
-  const { startMonth: financialYearStartMonth, failed: financialYearFailed } =
-    useFinancialYearStartMonth(isAdmin);
+  const [projectId, setProjectId] = useState("");
+  const [accountFilter, setAccountFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [view, setView] = useState<FinanceView>("revenue");
+  const accountSelected = accountFilter !== "";
+  const shownView: FinanceView = accountSelected && (view === "customerDeposits" || view === "overdue") ? "revenue" : view;
+  if (shownView !== view) setView(shownView);
 
   const [summary, setSummary] = useState<FinancialSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
-  const [view, setView] = useState<View>("revenue");
-
-  // Cards and charts arrive together from one request, so they cannot end up describing different
-  // periods — and there is no longer a partial-failure state where one loaded and the other did not.
-  const [chartData, setChartData] = useState<FinanceChartData | null>(null);
-  // Why a custom From/To cannot be used yet. Blocks the request rather than sending half a range.
-  const rangeError = financeRangeError(fromDate, toDate);
-  const draftRangeError = financeRangeError(draftFromDate, draftToDate);
-
-  // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
-  const { rows, loading, loadingMore, hasMore, error, loadMore, reload } =
-    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate, accountFilter, isAdmin && !rangeError);
-
+  const [payable, setPayable] = useState<number | null>(null);
+  const [payableError, setPayableError] = useState<string | null>(null);
+  const [revenueLookupError, setRevenueLookupError] = useState<string | null>(null);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [assetLookupError, setAssetLookupError] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<FinanceAccountOption[]>([]);
+  const [accountLookupError, setAccountLookupError] = useState<string | null>(null);
+  const [assetAccounts, setAssetAccounts] = useState<FinanceAccountOption[]>([]);
+  const [assetAccountsLoading, setAssetAccountsLoading] = useState(false);
+  const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
+  const [revenueCategoriesLoading, setRevenueCategoriesLoading] = useState(false);
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+  const [vendors, setVendors] = useState<VendorOption[]>([]);
+  const [lookupsLoading, setLookupsLoading] = useState(false);
   const [revenueForm, setRevenueForm] = useState<RevenueFormState | null>(null);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
   const [assetForm, setAssetForm] = useState<AssetPurchaseFormState | null>(null);
-  // Failures from opening or deleting a breakdown row. Separate from the list's own `error`,
-  // which belongs to the fetch that drew the rows and must not be overwritten by an action taken
-  // on one of them — the table is still perfectly valid when a single row fails to open.
-  const [rowError, setRowError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
-  // savingRef stops a double click; this stops the retry after a lost response — the one the
-  // operator cannot tell from a genuine failure. See lib/idempotency.
-  const idempotency = useIdempotencyKeys();
-  const [formError, setFormError] = useState<string | null>(null);
-  const assetAccountsLoaded = useRef(false);
-  const assetAccountsRequest = useRef<Promise<void> | null>(null);
-  const whtLookupsLoaded = useRef(false);
-  const whtLookupsRequest = useRef<Promise<void> | null>(null);
-  const revenueCategoriesLoaded = useRef(false);
-  const revenueCategoriesRequest = useRef<Promise<void> | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
 
-  const loadFinanceAccounts = useCallback(async () => {
+  const summaryRequest = useRef(0);
+  const payableRequest = useRef(0);
+  const accountsLoaded = useRef(false);
+  const accountsFailed = useRef(false);
+  const accountsRequest = useRef<Promise<void> | null>(null);
+  const assetLoaded = useRef(false);
+  const assetFailed = useRef(false);
+  const assetRequest = useRef<Promise<void> | null>(null);
+  const revenueLoaded = useRef(false);
+  const revenueFailed = useRef(false);
+  const revenueRequest = useRef<Promise<void> | null>(null);
+  const lookupsLoaded = useRef(false);
+  const lookupsFailed = useRef(false);
+  const lookupsRequest = useRef<Promise<void> | null>(null);
+
+  const loadSummary = useCallback(async (signal?: AbortSignal) => {
+    const ticket = ++summaryRequest.current;
+    setSummaryLoading(true);
     try {
-      const [regular, staff] = await Promise.all([
-        api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true"),
-        api("/api/finance/accounts/options?includeInactive=true&type=10"),
-      ]);
-      if (regular.ok || staff.ok) {
-        const regularRows = regular.ok ? await regular.json() as FinanceAccountOption[] : [];
-        const staffRows = staff.ok ? await staff.json() as FinanceAccountOption[] : [];
-        const rows = [...regularRows, ...staffRows];
-        setFinanceAccounts(rows.filter((row, index) => rows.findIndex((x) => x.id === row.id) === index));
-      }
+      const loaded = await fetchFinanceSummary<FinancialSummary>(
+        { projectId, from: fromDate, to: toDate, account: accountFilter },
+        signal,
+      );
+      if (ticket !== summaryRequest.current) return;
+      setSummary(loaded);
+      setSummaryError(null);
     } catch {
-      /* The form will retain its validation message if accounts cannot be loaded. */
+      if (signal?.aborted || ticket !== summaryRequest.current) return;
+      setSummary(null);
+      setSummaryError("The finance totals could not be loaded, so the figures below are unavailable.");
+    } finally {
+      if (ticket === summaryRequest.current) setSummaryLoading(false);
+    }
+  }, [projectId, fromDate, toDate, accountFilter]);
+
+  const fetchPage = useCallback(async ({ skip, take, signal }: PagedListQuery) => {
+    if (!allowed) return { items: [] as FinanceRow[], hasMore: false, totalCount: 0 };
+    const params = new URLSearchParams({ view: VIEW_PARAM[shownView], skip: String(skip), take: String(take) });
+    if (projectId) params.set("projectId", projectId);
+    if (fromDate) params.set("from", fromDate);
+    if (toDate) params.set("to", toDate);
+    if (accountFilter) params.set("account", accountFilter);
+    const res = await api(`/api/Finance/rows?${params.toString()}`, { signal });
+    if (!res.ok) throw new Error(await financeApiError(res, "Unable to load rows."));
+    const json = await res.json() as { items?: FinanceRow[]; hasMore?: boolean; totalCount?: number | null };
+    return { items: json.items ?? [], hasMore: json.hasMore, totalCount: json.totalCount ?? null };
+  }, [allowed, shownView, projectId, fromDate, toDate, accountFilter]);
+
+  const list = usePagedList<FinanceRow>({
+    queryKey: allowed ? `${shownView}|${projectId}|${accountFilter}|${fromDate}|${toDate}` : "waiting",
+    fetchPage,
+  });
+
+  const loadPayable = useCallback(async () => {
+    const ticket = ++payableRequest.current;
+    try {
+      const loaded = await payableSummary();
+      if (ticket !== payableRequest.current) return;
+      setPayable(loaded.outstandingPayable);
+      setPayableError(null);
+    } catch {
+      if (ticket !== payableRequest.current) return;
+      setPayable(null);
+      setPayableError("Tax payable could not be loaded.");
     }
   }, []);
 
-  // The purchase destinations: fixed-asset accounts (type 7) only, asked for explicitly rather than
-  // by "not cash-like", which would also offer liabilities and capital as somewhere to put a desk.
-  //
-  // Work-in-progress accounts (type 9) are deliberately NOT offered. Construction and site work is
-  // a cost on the day it is paid, so it belongs on the Expense form under its construction head;
-  // the server refuses a work-in-progress destination and this list simply agrees with it. The WIP
-  // accounts still exist and still carry their inherited ERP balances.
-  const loadAssetAccounts = useCallback((): Promise<void> => {
-    if (assetAccountsLoaded.current) return Promise.resolve();
-    if (assetAccountsRequest.current) return assetAccountsRequest.current;
-    setAssetAccountsLoading(true);
+  const refreshTotals = useCallback(() => {
+    void loadSummary();
+    void loadPayable();
+  }, [loadSummary, loadPayable]);
+
+  const refresh = useCallback(() => {
+    refreshTotals();
+    list.reload();
+  }, [refreshTotals, list]);
+
+  useEffect(() => {
+    if (!allowed) return;
+    const controller = new AbortController();
+    void loadSummary(controller.signal);
+    return () => controller.abort();
+  }, [allowed, loadSummary]);
+
+  useEffect(() => {
+    if (!allowed) return;
+    void loadPayable();
+  }, [allowed, loadPayable]);
+
+  const loadAccounts = useCallback((force = false): Promise<void> => {
+    if (!force && (accountsLoaded.current || accountsFailed.current)) return Promise.resolve();
+    if (accountsRequest.current) return accountsRequest.current;
+    setAccountLookupError(null);
     const request = (async () => {
       try {
-        const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
-        if (response.ok) {
-          setAssetAccounts(await response.json() as FinanceAccountOption[]);
-          assetAccountsLoaded.current = true;
-        }
-      } catch {
-        /* The purchase form shows its validation message if these cannot be loaded. */
+        const [regular, staff] = await Promise.all([
+          api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true"),
+          api("/api/finance/accounts/options?includeInactive=true&type=10"),
+        ]);
+        if (!regular.ok) throw new Error(await financeApiError(regular, "Accounts could not be loaded."));
+        if (!staff.ok) throw new Error(await financeApiError(staff, "Accounts could not be loaded."));
+        const regularRows = await regular.json() as FinanceAccountOption[];
+        const staffRows = await staff.json() as FinanceAccountOption[];
+        const rows = [...regularRows, ...staffRows];
+        setAccounts(rows.filter((row, index) => rows.findIndex((other) => other.id === row.id) === index));
+        accountsLoaded.current = true;
+        accountsFailed.current = false;
+      } catch (caught) {
+        accountsFailed.current = true;
+        setAccountLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Accounts could not be loaded.");
       } finally {
-        assetAccountsRequest.current = null;
-        setAssetAccountsLoading(false);
+        accountsRequest.current = null;
       }
     })();
-    assetAccountsRequest.current = request;
+    accountsRequest.current = request;
     return request;
   }, []);
 
-  // Inactive entries are included so editing an old expense still shows the head or payee it was
-  // booked against, rather than silently blanking it.
-  const loadWhtLookups = useCallback((): Promise<void> => {
-    if (whtLookupsLoaded.current) return Promise.resolve();
-    if (whtLookupsRequest.current) return whtLookupsRequest.current;
-    setWhtLookupsLoading(true);
+  const retryAccounts = useCallback(() => {
+    accountsFailed.current = false;
+    accountsLoaded.current = false;
+    void loadAccounts(true);
+  }, [loadAccounts]);
+
+  useEffect(() => {
+    if (!allowed) return;
+    void loadAccounts();
+  }, [allowed, loadAccounts]);
+
+  const loadRevenueCategories = useCallback((force = false): Promise<void> => {
+    if (!force && (revenueLoaded.current || revenueFailed.current)) return Promise.resolve();
+    if (revenueRequest.current) return revenueRequest.current;
+    setRevenueCategoriesLoading(true);
+    setRevenueLookupError(null);
+    const request = (async () => {
+      try {
+        const response = await api("/api/finance/revenue-categories?includeInactive=true");
+        if (!response.ok) throw new Error(await financeApiError(response, "Revenue categories could not be loaded."));
+        setRevenueCategories(await response.json());
+        revenueLoaded.current = true;
+        revenueFailed.current = false;
+      } catch (caught) {
+        revenueFailed.current = true;
+        setRevenueLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Revenue categories could not be loaded.");
+      } finally {
+        revenueRequest.current = null;
+        setRevenueCategoriesLoading(false);
+      }
+    })();
+    revenueRequest.current = request;
+    return request;
+  }, []);
+
+  const loadAssetAccounts = useCallback((force = false): Promise<void> => {
+    if (!force && (assetLoaded.current || assetFailed.current)) return Promise.resolve();
+    if (assetRequest.current) return assetRequest.current;
+    setAssetAccountsLoading(true);
+    setAssetLookupError(null);
+    const request = (async () => {
+      try {
+        const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
+        if (!response.ok) throw new Error(await financeApiError(response, "Fixed asset accounts could not be loaded."));
+        setAssetAccounts(await response.json() as FinanceAccountOption[]);
+        assetLoaded.current = true;
+        assetFailed.current = false;
+      } catch (caught) {
+        assetFailed.current = true;
+        setAssetLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Fixed asset accounts could not be loaded.");
+      } finally {
+        assetRequest.current = null;
+        setAssetAccountsLoading(false);
+      }
+    })();
+    assetRequest.current = request;
+    return request;
+  }, []);
+
+  const loadLookups = useCallback((force = false): Promise<void> => {
+    if (!force && (lookupsLoaded.current || lookupsFailed.current)) return Promise.resolve();
+    if (lookupsRequest.current) return lookupsRequest.current;
+    setLookupsLoading(true);
+    setLookupError(null);
     const request = (async () => {
       try {
         const [categories, vendorRows] = await Promise.all([listCategories(true), vendorOptions(true)]);
         setExpenseCategories(categories);
         setVendors(vendorRows);
-        whtLookupsLoaded.current = true;
-      } catch {
-        /* The expense form falls back to free-text entry if these cannot be loaded. */
+        lookupsLoaded.current = true;
+        lookupsFailed.current = false;
+      } catch (caught) {
+        lookupsFailed.current = true;
+        setLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Expense categories could not be loaded.");
       } finally {
-        whtLookupsRequest.current = null;
-        setWhtLookupsLoading(false);
+        lookupsRequest.current = null;
+        setLookupsLoading(false);
       }
     })();
-    whtLookupsRequest.current = request;
+    lookupsRequest.current = request;
     return request;
   }, []);
 
-  const loadRevenueCategories = useCallback((): Promise<void> => {
-    if (revenueCategoriesLoaded.current) return Promise.resolve();
-    if (revenueCategoriesRequest.current) return revenueCategoriesRequest.current;
-    setRevenueCategoriesLoading(true);
-    const request = (async () => {
-      try {
-        const response = await api("/api/finance/revenue-categories?includeInactive=true");
-        if (response.ok) {
-          setRevenueCategories(await response.json());
-          revenueCategoriesLoaded.current = true;
-        }
-      } catch {
-        /* The revenue form shows an empty managed list and cannot save an unclassified entry. */
-      } finally {
-        revenueCategoriesRequest.current = null;
-        setRevenueCategoriesLoading(false);
-      }
-    })();
-    revenueCategoriesRequest.current = request;
-    return request;
-  }, []);
+  const retryRevenueCategories = useCallback(() => {
+    revenueFailed.current = false;
+    revenueLoaded.current = false;
+    void loadRevenueCategories(true);
+  }, [loadRevenueCategories]);
 
-  // The signal matters as much as the request. These seven cards are Revenue, Expenses, Net Profit,
-  // Deposits and Outstanding: a failed load that leaves them showing Rs 0 reads as "the business did
-  // nothing", and one that leaves the PREVIOUS filter's figures on screen reads as an answer to a
-  // question nobody asked. Both are worse than saying nothing, so a failure clears the figures and
-  // says so, and only the newest request may write.
-  //
-  // The ticket is what enforces that last part, not the abort signal: refreshAll calls this after a
-  // save with nothing to abort it, so two loads can genuinely be in flight and the slower one must
-  // lose regardless of which of them was cancelled.
-  const summaryRequest = useRef(0);
-  const loadSummary = useCallback(async (signal?: AbortSignal) => {
-    const ticket = ++summaryRequest.current;
-    if (rangeError) {
-      setSummary(null);
-      setChartData(null);
-      setSummaryLoading(false);
-      setSummaryError(rangeError);
-      return;
-    }
-    setSummaryLoading(true);
+  const retryAssetAccounts = useCallback(() => {
+    assetFailed.current = false;
+    assetLoaded.current = false;
+    void loadAssetAccounts(true);
+  }, [loadAssetAccounts]);
+
+  const retryLookups = useCallback(() => {
+    lookupsFailed.current = false;
+    lookupsLoaded.current = false;
+    void loadLookups(true);
+  }, [loadLookups]);
+
+  const revenueOpen = revenueForm !== null;
+  const expenseOpen = expenseForm !== null;
+  const assetOpen = assetForm !== null;
+  useEffect(() => { if (allowed && revenueOpen) void loadRevenueCategories(); }, [allowed, revenueOpen, loadRevenueCategories]);
+  useEffect(() => { if (allowed && assetOpen) void loadAssetAccounts(); }, [allowed, assetOpen, loadAssetAccounts]);
+  useEffect(() => { if (allowed && (expenseOpen || assetOpen)) void loadLookups(); }, [allowed, expenseOpen, assetOpen, loadLookups]);
+
+  const openFile = useCallback(async (kind: FinanceRecordKind, id: number, attachment: FinanceAttachmentInfo, download: boolean) => {
     try {
-      const loaded = await fetchFinanceDashboard<FinancialSummary>(
-        { projectId, from: fromDate, to: toDate, account: accountFilter },
-        signal,
-      );
-      if (ticket !== summaryRequest.current) return;
-      setSummary(loaded.summary);
-      setChartData(loaded.charts);
-      setSummaryError(null);
-    } catch {
-      if (ticket !== summaryRequest.current) return;
-      setSummary(null);
-      setChartData(null);
-      setSummaryError("The finance totals could not be loaded, so the figures below are unavailable.");
-    } finally {
-      if (ticket === summaryRequest.current) setSummaryLoading(false);
+      await openFinanceAttachment(kind, id, attachment.fileName, download);
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "The attachment could not be opened.");
     }
-  }, [projectId, fromDate, toDate, accountFilter, rangeError]);
+  }, [toast]);
 
-  // After a create/edit/delete, refresh the totals, the charts and the visible rows.
-  const refreshAll = useCallback(async () => {
-    const summaryRefresh = loadSummary();
-    reload();
-    await summaryRefresh;
-  }, [loadSummary, reload]);
-
-  useEffect(() => {
-    if (!isAdmin) {
-      navigate("/");
-      return;
-    }
-    void loadFinanceAccounts();
-  }, [isAdmin, navigate, loadFinanceAccounts]);
-
-  // These lists are used only inside their respective forms. Deferring them keeps the dashboard's
-  // normal read path lean; the in-flight refs above also prevent a quick close/reopen duplicating it.
-  const revenueFormOpen = revenueForm !== null;
-  const assetFormOpen = assetForm !== null;
-  const whtFormOpen = expenseForm !== null || assetFormOpen;
-  useEffect(() => {
-    if (isAdmin && revenueFormOpen) void loadRevenueCategories();
-  }, [isAdmin, revenueFormOpen, loadRevenueCategories]);
-  useEffect(() => {
-    if (isAdmin && assetFormOpen) void loadAssetAccounts();
-  }, [isAdmin, assetFormOpen, loadAssetAccounts]);
-  useEffect(() => {
-    if (isAdmin && whtFormOpen) void loadWhtLookups();
-  }, [isAdmin, whtFormOpen, loadWhtLookups]);
-
-  useEffect(() => {
-    if (!isAdmin) return;
-    const controller = new AbortController();
-    void loadSummary(controller.signal);
-    return () => controller.abort();
-  }, [isAdmin, loadSummary]);
-
-  // Which quick-period chip (if any) matches the current from/to selection.
-  const activePeriod = useMemo<Period>(() => {
-    if (!draftFromDate && !draftToDate) return "all";
-    for (const preset of PERIODS) {
-      if (preset === "all") continue;
-      const r = buildPeriodRange(preset, financialYearStartMonth);
-      if (r.from === draftFromDate && r.to === draftToDate) return preset;
-    }
-    return "custom";
-  }, [draftFromDate, draftToDate, financialYearStartMonth]);
-
-  const applyPeriod = useCallback((period: Period) => {
-    const r = buildPeriodRange(period, financialYearStartMonth);
-    // Preset periods are immediate actions; only the manual filter fields wait for Apply.
-    setFromDate(r.from);
-    setToDate(r.to);
-    setDraftFromDate(r.from);
-    setDraftToDate(r.to);
-  }, [financialYearStartMonth]);
-
-  const applyFilters = () => {
-    if (draftRangeError) return;
-    setProjectId(draftProjectId);
-    setAccountFilter(draftAccountFilter);
-    setFromDate(draftFromDate);
-    setToDate(draftToDate);
-  };
-
-  // An account filter changes what the money cards MEAN, so it changes what they are called. A
-  // recognised sale moves no cash and belongs to no bank, so "Total Revenue" under a bank filter is
-  // that bank's revenue entries, not the period's revenue — and Net Profit cannot be stated at all.
-  const accountSelected = !!accountFilter;
-
-  // The views whose cards disappear under an account filter must not stay open behind them: a Net
-  // Profit table for a bank is the same untruth as a Net Profit card for one, and deposits,
-  // outstanding and overdue belong to bookings rather than accounts and would show empty.
-  useEffect(() => {
-    if (!accountSelected) return;
-    setView((current) => (current === "netProfit" || current === "customerDeposits"
-      || current === "outstanding" || current === "overdue") ? "revenue" : current);
-  }, [accountSelected]);
-
-  const summaryCards = useMemo<SummaryCard[]>(() => {
-    const s = summary;
-    const periodCards: SummaryCard[] = [
-      {
-        label: accountSelected ? "Revenue on This Account" : "Total Revenue",
-        value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View,
-      },
-      // Opens the BREAKDOWN, not the expense table. This card is ordinary expenses plus commissions,
-      // rebates, customer credits, loan interest and fixed assets — a table holding only the first of
-      // those could not account for the figure the operator just clicked.
-      {
-        label: accountSelected ? "Costs on This Account" : "Total Expenses",
-        value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "totalExpenses" as View,
-      },
-      // Sits next to Total Expenses because it is part of it: the same spending, broken out so the
-      // reader can see how much of the period's cost went on things the company still owns.
-      { label: "Fixed Assets Bought", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
-    ];
-    // A balance as at the END of the selected period, not a period total, and deliberately next to
-    // Revenue: this is money customers have handed over that the company has NOT yet earned. It
-    // belongs to a booking rather than to an account, so an account filter suppresses it.
-    const depositCard: SummaryCard = {
-      label: "Customer Deposits", note: "at period end",
-      value: s?.customerDepositsBalance ?? 0, valueColor: "text-[var(--app-text)]", underline: "#a78bfa", view: "customerDeposits" as View,
-    };
-    // One profit figure, and the same one every other screen reports — but only when the question
-    // is one an answer exists for. With an account selected the screen shows what that account can
-    // actually say about itself: how much cash moved through it.
-    const profitCard: SummaryCard = accountSelected
-      ? {
-        label: "Account Net Movement",
-        value: s?.accountNetMovement ?? 0,
-        valueColor: (s?.accountNetMovement ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400",
-        underline: "#818cf8", view: null,
-      }
-      : {
-        label: "Net Profit", value: s?.netProfit ?? 0,
-        valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400",
-        underline: "#cba95c", view: "netProfit" as View,
-      };
-    // Named "Current" and stamped "as of today" because they are, and because the cards beside them
-    // are not: these two are balances as they stand today and ignore the date filter entirely. Under
-    // a January range the row otherwise read as "January revenue, January profit, January overdue",
-    // and only the last of those was false. The stamp says it on the card, where the number is read,
-    // instead of in a paragraph underneath that has to be matched back to the right cards.
-    const snapshotCards: SummaryCard[] = [
-      { label: "Current Outstanding", note: "as of today", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
-      { label: "Current Overdue", note: "as of today", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
-    ];
-    return accountSelected
-      ? [...periodCards, profitCard]
-      : [...periodCards, depositCard, profitCard, ...snapshotCards];
-  }, [summary, accountSelected]);
-
-  // Clicking any card just switches the view below in place (like the period
-  // chips), keeping whatever project/period filters are already applied. No
-  // page scroll — animating a smooth scroll while the table reloads/resizes
-  // made the transition feel jerky.
-  const focusView = useCallback((target: View) => {
-    setView(target);
-  }, []);
-
-  const resetForms = () => {
-    setRevenueForm(null);
-    setExpenseForm(null);
-    setAssetForm(null);
-    setFormError(null);
-    setSaving(false);
-    savingRef.current = false;
-  };
-
-  const startSaving = () => {
-    if (savingRef.current) return false;
-    savingRef.current = true;
-    setSaving(true);
-    return true;
-  };
-
-  const finishSaving = () => {
-    savingRef.current = false;
-    setSaving(false);
-  };
-
-  const submitRevenue = async () => {
-    if (!revenueForm) return;
-    setFormError(null);
-    const amount = Number(revenueForm.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setFormError("Enter a valid amount greater than zero.");
-      return;
-    }
-    if (!revenueForm.revenueCategoryId) {
-      setFormError("Choose a revenue category. Manage the list under Finance settings.");
-      return;
-    }
-    if (!revenueForm.financeAccountId) {
-      setFormError("Select the account where this revenue was received.");
-      return;
-    }
-    if (!startSaving()) return;
-    try {
-      const body = new FormData();
-      if (revenueForm.projectId) body.append("projectId", revenueForm.projectId);
-      body.append("financeAccountId", revenueForm.financeAccountId);
-      body.append("amount", String(amount));
-      body.append("revenueType", revenueForm.revenueType.trim());
-      body.append("revenueCategoryId", revenueForm.revenueCategoryId);
-      body.append("description", revenueForm.description.trim());
-      body.append("reference", revenueForm.reference.trim());
-      if (revenueForm.date) body.append("date", revenueForm.date);
-      if (revenueForm.selectedAttachment) body.append("attachment", revenueForm.selectedAttachment);
-      if (revenueForm.removeAttachment) body.append("removeAttachment", "true");
-      // The version the form was opened with. Without it a second admin's save would overwrite
-      // the first's silently; with it the server refuses and the operator is told to reload.
-      if (revenueForm.id) body.append("concurrencyToken", revenueForm.concurrencyToken);
-      // Creates carry an idempotency key so a retry after a lost response is recognised instead of
-      // recording the income twice; the key is tied to what is being saved, so correcting the amount
-      // and saving again is treated as the new entry it is.
-      const signature = `revenue:${revenueForm.financeAccountId}:${amount}:${revenueForm.date}:${revenueForm.revenueCategoryId}`;
-      const res = revenueForm.id
-        ? await api(`/api/Finance/revenue/${revenueForm.id}/form`, { method: "PUT", body })
-        : await api("/api/Finance/revenue/form",
-            moneyRequest(idempotency.key(signature, "revenue"), { method: "POST", body }));
-      if (!res.ok) {
-        setFormError(await financeApiError(res, "Failed to save revenue entry."));
-        return;
-      }
-      if (!revenueForm.id) idempotency.release(signature);
-      resetForms();
-      await refreshAll();
-    } catch {
-      setFormError("The revenue entry could not be saved. Check your connection and try again.");
-    } finally {
-      finishSaving();
-    }
-  };
-
-  const submitExpense = async () => {
-    if (!expenseForm) return;
-    setFormError(null);
-    const amount = Number(expenseForm.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setFormError("Enter a valid amount greater than zero.");
-      return;
-    }
-    if (!expenseForm.categoryId && !expenseForm.legacyCategory) {
-      setFormError("Choose an expense category. Add a new head under Finance ▸ Settings if the one you need is missing.");
-      return;
-    }
-    if (!expenseForm.categoryId && !expenseForm.category.trim()) {
-      setFormError("Category is required.");
-      return;
-    }
-    if (!expenseForm.financeAccountId) {
-      setFormError("Select the account this expense was paid from.");
-      return;
-    }
-    if (!startSaving()) return;
-    try {
-      const body = new FormData();
-      if (expenseForm.projectId) body.append("projectId", expenseForm.projectId);
-      body.append("financeAccountId", expenseForm.financeAccountId);
-      body.append("amount", String(amount));
-      // A category id wins server-side; the text is still sent so free-text heads keep working.
-      if (expenseForm.categoryId) body.append("categoryId", expenseForm.categoryId);
-      body.append("category", expenseForm.category.trim());
-      body.append("description", expenseForm.description.trim());
-      if (expenseForm.vendorId) body.append("vendorId", expenseForm.vendorId);
-      body.append("vendor", expenseForm.vendor.trim());
-      if (expenseForm.date) body.append("date", expenseForm.date);
-      // Only sent when the head is a managed one — the server recalculates and rejects a figure
-      // that does not belong, so a stale value cannot slip through.
-      if (expenseForm.categoryId) {
-        if (expenseForm.wht.rate !== "") body.append("whtRate", expenseForm.wht.rate);
-        if (expenseForm.wht.amount !== "") body.append("whtAmount", expenseForm.wht.amount);
-        if (expenseForm.wht.overrideReason.trim())
-          body.append("whtOverrideReason", expenseForm.wht.overrideReason.trim());
-      }
-      if (expenseForm.selectedAttachment) body.append("attachment", expenseForm.selectedAttachment);
-      if (expenseForm.removeAttachment) body.append("removeAttachment", "true");
-      if (expenseForm.id) body.append("concurrencyToken", expenseForm.concurrencyToken);
-      const signature = `expense:${expenseForm.financeAccountId}:${amount}:${expenseForm.date}:${expenseForm.categoryId}`;
-      const res = expenseForm.id
-        ? await api(`/api/Finance/expenses/${expenseForm.id}/form`, { method: "PUT", body })
-        : await api("/api/Finance/expenses/form",
-            moneyRequest(idempotency.key(signature, "expense"), { method: "POST", body }));
-      if (!res.ok) {
-        setFormError(await financeApiError(res, "Failed to save expense."));
-        return;
-      }
-      if (!expenseForm.id) idempotency.release(signature);
-      resetForms();
-      await refreshAll();
-    } catch {
-      setFormError("The expense could not be saved. Check your connection and try again.");
-    } finally {
-      finishSaving();
-    }
-  };
-
-  const submitAssetPurchase = async () => {
-    if (!assetForm) return;
-    setFormError(null);
-    const amount = Number(assetForm.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setFormError("Enter a valid amount greater than zero.");
-      return;
-    }
-    if (!assetForm.itemName.trim()) {
-      setFormError("Describe what was bought, e.g. “3 office desks”.");
-      return;
-    }
-    if (!assetForm.assetAccountId) {
-      setFormError("Select the asset account this purchase belongs to.");
-      return;
-    }
-    if (!assetForm.financeAccountId) {
-      setFormError("Select the account this purchase was paid from.");
-      return;
-    }
-    if (!assetForm.categoryId) {
-      setFormError("Choose a category. Add a new head under Finance ▸ Settings if the one you need is missing.");
-      return;
-    }
-    if (!startSaving()) return;
-    try {
-      const body = new FormData();
-      if (assetForm.projectId) body.append("projectId", assetForm.projectId);
-      body.append("assetAccountId", assetForm.assetAccountId);
-      body.append("financeAccountId", assetForm.financeAccountId);
-      body.append("amount", String(amount));
-      body.append("itemName", assetForm.itemName.trim());
-      body.append("categoryId", assetForm.categoryId);
-      body.append("category", assetForm.category.trim());
-      body.append("description", assetForm.description.trim());
-      if (assetForm.vendorId) body.append("vendorId", assetForm.vendorId);
-      body.append("vendor", assetForm.vendor.trim());
-      if (assetForm.date) body.append("date", assetForm.date);
-      // The server recalculates and rejects a figure that does not belong, so a stale value
-      // cannot slip through here any more than it can on the expense form.
-      if (assetForm.wht.rate !== "") body.append("whtRate", assetForm.wht.rate);
-      if (assetForm.wht.amount !== "") body.append("whtAmount", assetForm.wht.amount);
-      if (assetForm.wht.overrideReason.trim())
-        body.append("whtOverrideReason", assetForm.wht.overrideReason.trim());
-      if (assetForm.selectedAttachment) body.append("attachment", assetForm.selectedAttachment);
-      if (assetForm.removeAttachment) body.append("removeAttachment", "true");
-      if (assetForm.id) body.append("concurrencyToken", assetForm.concurrencyToken);
-      const signature = `asset:${assetForm.financeAccountId}:${assetForm.assetAccountId}:${amount}:${assetForm.date}`;
-      const res = assetForm.id
-        ? await api(`/api/Finance/asset-purchases/${assetForm.id}/form`, { method: "PUT", body })
-        : await api("/api/Finance/asset-purchases/form",
-            moneyRequest(idempotency.key(signature, "asset-purchase"), { method: "POST", body }));
-      if (!res.ok) {
-        setFormError(await financeApiError(res, "Failed to save the asset purchase."));
-        return;
-      }
-      if (!assetForm.id) idempotency.release(signature);
-      resetForms();
-      await refreshAll();
-    } catch {
-      setFormError("The purchase could not be saved. Check your connection and try again.");
-    } finally {
-      finishSaving();
-    }
-  };
-
-  // Deletes carry the row version too, and surface the server's message rather than a generic
-  // failure — "changed by someone else" is the one delete error an operator can actually act on.
-  const deleteRevenue = async (row: RevenueLine) => {
-    if (row.manualRevenueId == null) return;
-    if (!window.confirm("Delete this manual revenue entry?")) return;
-    const res = await api(
-      `/api/Finance/revenue/${row.manualRevenueId}?concurrencyToken=${encodeURIComponent(row.concurrencyToken ?? "")}`,
-      { method: "DELETE" },
-    );
-    if (res.ok) await refreshAll();
-    else alert(await financeApiError(res, "Failed to delete revenue entry."));
-  };
-
-  const deleteExpense = async (row: ExpenseLine) => {
-    if (!window.confirm("Delete this expense?")) return;
-    const res = await api(
-      `/api/Finance/expenses/${row.id}?concurrencyToken=${encodeURIComponent(row.concurrencyToken)}`,
-      { method: "DELETE" },
-    );
-    if (res.ok) await refreshAll();
-    else alert(await financeApiError(res, "Failed to delete expense."));
-  };
-
-  const deleteAssetPurchase = async (row: AssetPurchaseLine) => {
-    if (!window.confirm("Delete this asset purchase? The bank balance and the asset account both move back.")) return;
-    const res = await api(
-      `/api/Finance/asset-purchases/${row.id}?concurrencyToken=${encodeURIComponent(row.concurrencyToken)}`,
-      { method: "DELETE" },
-    );
-    if (res.ok) await refreshAll();
-    else alert(await financeApiError(res, "Failed to delete the asset purchase."));
-  };
-
-  const editAssetPurchase = (row: AssetPurchaseLine) => {
-    setRevenueForm(null);
-    setExpenseForm(null);
-    setFormError(null);
-    setAssetForm({
-      id: row.id,
-      projectId: row.projectId != null ? String(row.projectId) : "",
-      assetAccountId: String(row.assetAccountId),
-      assetAccountName: row.assetAccountName,
-      financeAccountId: String(row.financeAccountId),
-      amount: String(row.amount),
-      itemName: row.itemName,
-      categoryId: row.categoryId != null ? String(row.categoryId) : "",
-      category: row.category,
-      description: row.description ?? "",
-      vendorId: row.vendorId != null ? String(row.vendorId) : "",
-      vendor: row.vendor ?? "",
-      date: row.date.slice(0, 10),
-      // What was actually withheld, not what today's rate table would produce — reopening a
-      // purchase must not restate a figure that has already been filed.
-      wht: {
-        rate: String(Number(row.whtRate.toFixed(4))),
-        amount: String(row.whtAmount),
-        overrideReason: "",
-      },
-      attachment: row.attachment,
-      selectedAttachment: null,
-      removeAttachment: false,
-      concurrencyToken: row.concurrencyToken,
-    });
-  };
-
-  /**
-   * The breakdown carries an id, not a record — it cannot: it is a union of six tables. Editing
-   * one means fetching it first, above all for its concurrency token, without which the save would
-   * overwrite whatever anyone else did to the row in the meantime.
-   */
-  const loadCostRecord = async (row: CostLine): Promise<ExpenseLine | AssetPurchaseLine | null> => {
+  const loadCostRecord = useCallback(async (row: CostLine): Promise<ExpenseLine | AssetPurchaseLine | null> => {
     const path = row.source === "expense"
       ? `/api/Finance/expenses/${row.sourceId}`
       : `/api/Finance/asset-purchases/${row.sourceId}`;
-    setRowError(null);
     try {
       const res = await api(path);
       if (!res.ok) {
-        setRowError(await financeApiError(res, "This record could not be opened. Refresh and try again."));
+        toast.error(await financeApiError(res, "This record could not be opened. Refresh and try again."));
         return null;
       }
-      return (await res.json()) as ExpenseLine | AssetPurchaseLine;
+      return await res.json() as ExpenseLine | AssetPurchaseLine;
     } catch {
-      setRowError("This record could not be opened. Check your connection and try again.");
+      toast.error("This record could not be opened. Check your connection and try again.");
       return null;
     }
-  };
+  }, [toast]);
 
-  const openCostRow = async (row: CostLine) => {
-    switch (row.source) {
-      case "commission":
-      case "rebate":
-      case "customerCredit":
-        navigate("/finance/commissions-rebates");
-        return;
-      case "loanInterest":
-        navigate("/finance/loans");
-        return;
-      case "expense": {
-        const record = await loadCostRecord(row);
-        if (record) editExpense(record as ExpenseLine);
-        return;
-      }
-      case "assetPurchase": {
-        const record = await loadCostRecord(row);
-        if (record) editAssetPurchase(record as AssetPurchaseLine);
-        return;
-      }
+  const openRevenue = () => { setExpenseForm(null); setAssetForm(null); setRevenueForm(emptyRevenueForm()); };
+  const openExpense = () => { setRevenueForm(null); setAssetForm(null); setExpenseForm(emptyExpenseForm()); };
+  const openAsset = () => { setRevenueForm(null); setExpenseForm(null); setAssetForm(emptyAssetForm()); };
+
+  const openCost = async (row: CostLine) => {
+    if (row.source === "commission" || row.source === "rebate" || row.source === "customerCredit") {
+      navigate("/finance/commissions-rebates");
+      return;
     }
-  };
-
-  const deleteCostRow = async (row: CostLine) => {
+    if (row.source === "loanInterest") {
+      navigate("/finance/loans");
+      return;
+    }
+    setBusyKey(`edit:${row.source}:${row.sourceId}`);
     const record = await loadCostRecord(row);
+    setBusyKey(null);
     if (!record) return;
-    if (row.source === "expense") await deleteExpense(record as ExpenseLine);
-    else await deleteAssetPurchase(record as AssetPurchaseLine);
+    if (row.source === "expense") {
+      setRevenueForm(null);
+      setAssetForm(null);
+      setExpenseForm(expenseFormFrom(record as ExpenseLine));
+    } else {
+      setRevenueForm(null);
+      setExpenseForm(null);
+      setAssetForm(assetFormFrom(record as AssetPurchaseLine));
+    }
   };
 
-  const editRevenue = (row: RevenueLine) => {
-    if (row.manualRevenueId == null) return;
-    setExpenseForm(null);
-    setAssetForm(null);
-    setFormError(null);
-    setRevenueForm({
-      id: row.manualRevenueId,
-      concurrencyToken: row.concurrencyToken ?? "",
-      projectId: row.projectId != null ? String(row.projectId) : "",
-      financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
-      amount: String(row.amount),
-      revenueType: row.revenueType,
-      revenueCategoryId: row.revenueCategoryId != null ? String(row.revenueCategoryId) : "",
-      description: row.description ?? "",
-      reference: row.reference ?? "",
-      date: row.date.slice(0, 10),
-      attachment: row.attachment,
-      selectedAttachment: null,
-      removeAttachment: false,
-    });
+  const askDeleteCost = async (row: CostLine) => {
+    if (row.source !== "expense" && row.source !== "assetPurchase") return;
+    setBusyKey(`delete:${row.source}:${row.sourceId}`);
+    const record = await loadCostRecord(row);
+    setBusyKey(null);
+    if (!record) return;
+    setPendingDelete({ kind: row.source, id: record.id, token: record.concurrencyToken });
   };
 
-  const editExpense = (row: ExpenseLine) => {
-    setRevenueForm(null);
-    setAssetForm(null);
-    setFormError(null);
-    setExpenseForm({
-      id: row.id,
-      concurrencyToken: row.concurrencyToken,
-      projectId: row.projectId != null ? String(row.projectId) : "",
-      financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
-      amount: String(row.amount),
-      categoryId: row.categoryId != null ? String(row.categoryId) : "",
-      category: row.category,
-      legacyCategory: row.categoryId == null,
-      description: row.description ?? "",
-      vendorId: row.vendorId != null ? String(row.vendorId) : "",
-      vendor: row.reference ?? "",
-      date: row.date.slice(0, 10),
-      // Seeded from what was actually withheld, so reopening an expense shows its own figures
-      // rather than what today's rate table would produce.
-      wht: {
-        rate: row.categoryId != null ? String(Number(row.whtRate.toFixed(4))) : "",
-        amount: row.categoryId != null ? String(row.whtAmount) : "",
-        overrideReason: row.whtOverrideReason ?? "",
-      },
-      attachment: row.attachment,
-      selectedAttachment: null,
-      removeAttachment: false,
-    });
-  };
-
-  const accessAttachment = async (
-    kind: FinanceRecordKind,
-    id: number,
-    attachment: FinanceAttachmentInfo,
-    download: boolean,
-  ) => {
+  const confirmDelete = async () => {
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    const path = pendingDelete.kind === "revenue"
+      ? `/api/Finance/revenue/${pendingDelete.id}`
+      : pendingDelete.kind === "expense"
+        ? `/api/Finance/expenses/${pendingDelete.id}`
+        : `/api/Finance/asset-purchases/${pendingDelete.id}`;
     try {
-      await openFinanceAttachment(kind, id, attachment.fileName, download);
-    } catch (attachmentError) {
-      window.alert(attachmentError instanceof Error ? attachmentError.message : "The attachment could not be opened.");
+      const res = await api(`${path}?concurrencyToken=${encodeURIComponent(pendingDelete.token)}`, { method: "DELETE" });
+      if (!res.ok) {
+        toast.error(await financeApiError(res, "Failed to delete."));
+        setPendingDelete(null);
+        return;
+      }
+      setPendingDelete(null);
+      toast.success("Deleted");
+      refreshTotals();
+      list.afterDelete();
+    } catch {
+      toast.error("This record could not be deleted. Check your connection and try again.");
+      setPendingDelete(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
-  if (!isAdmin) return null;
-
-  const money = (n: number, cls = "text-[var(--text-secondary)]") => (
-    <span className={`font-semibold tabular-nums whitespace-nowrap ${cls}`}>{formatMoney(n)}</span>
-  );
-
-  const attachmentCell = (
-    kind: FinanceRecordKind,
-    id: number | null,
-    attachment: FinanceAttachmentInfo | null,
-  ) => attachment && id != null ? (
-    <span className="inline-flex items-center gap-2 whitespace-nowrap">
-      <button type="button" onClick={(e) => { e.stopPropagation(); void accessAttachment(kind, id, attachment, false); }} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button>
-      <button type="button" aria-label={`Download ${attachment.fileName}`} title={`Download ${attachment.fileName}`} onClick={(e) => { e.stopPropagation(); void accessAttachment(kind, id, attachment, true); }} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button>
-    </span>
-  ) : <span className="text-xs text-[var(--text-muted)]">None</span>;
-
-  // Column config + horizontal min-width for the active view's virtualized table.
-  const { columns, minWidth, emptyText } = ((): {
-    columns: Column<AnyRow>[];
-    minWidth: number;
-    emptyText: string;
-  } => {
-    switch (view) {
-      case "revenue":
-        return {
-          minWidth: 1070,
-          emptyText: "No revenue for the selected filters.",
-          columns: [
-            { key: "date", header: "Date", width: "116px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
-            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).projectName}</span> },
-            { key: "account", header: "Received In", width: "minmax(170px,1.3fr)", render: (r) => { const x=r as RevenueLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
-            { key: "type", header: "Revenue Type", width: "minmax(150px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).revenueType}</span> },
-            { key: "amount", header: "Amount", width: "150px", align: "right", render: (r) => money((r as RevenueLine).amount, "text-emerald-400") },
-            { key: "source", header: "Source", width: "140px", render: (r) => {
-              const row = r as RevenueLine;
-              return (
-                <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${row.source === "Manual Revenue" ? "text-violet-400 bg-violet-500/10 border-violet-500/20" : "text-sky-400 bg-sky-500/10 border-sky-500/20"}`}>{row.source}</span>
-              );
-            } },
-            { key: "attachment", header: "Attachment", width: "120px", render: (r) => { const row = r as RevenueLine; return attachmentCell("revenue", row.manualRevenueId, row.attachment); } },
-            { key: "actions", header: "", width: "104px", align: "right", render: (r) => {
-              const row = r as RevenueLine;
-              return row.manualRevenueId != null ? (
-                <span className="inline-flex justify-end gap-2">
-                  <button type="button" onClick={() => editRevenue(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
-                  <button type="button" onClick={() => deleteRevenue(row)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
-                </span>
-              ) : null;
-            } },
-          ],
-        };
-      case "expense":
-        return {
-          minWidth: 1320,
-          emptyText: "No expenses for the selected filters.",
-          columns: [
-            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as ExpenseLine).date)}</span> },
-            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as ExpenseLine).projectName}</span> },
-            { key: "account", header: "Paid From", width: "minmax(150px,1fr)", render: (r) => { const x=r as ExpenseLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
-            { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => { const x = r as ExpenseLine; return <span className="text-[var(--text-primary)]">{x.category}{x.whtTaxSection && <small className="block text-[var(--text-muted)]">s.{x.whtTaxSection}</small>}</span>; } },
-            { key: "amount", header: "Gross", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).amount, "text-rose-400") },
-            // Gross, tax and net are shown side by side: the expense total and the bank movement
-            // are different numbers now, and hiding either invites a reconciliation dispute.
-            { key: "wht", header: "WHT", width: "120px", align: "right", render: (r) => {
-              const x = r as ExpenseLine;
-              if (!x.whtApplied) return <span className="text-xs text-[var(--text-muted)]">—</span>;
-              return (
-                <span className="whitespace-nowrap">
-                  {money(x.whtAmount, "text-amber-400")}
-                  <small className="block text-[var(--text-muted)]">
-                    {Number(x.whtRate.toFixed(4))}%{x.whtRateOverridden ? " ⚑" : ""}
-                  </small>
-                </span>
-              );
-            } },
-            { key: "net", header: "Net Paid", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).netPaid) },
-            { key: "description", header: "Description", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).description || "—"}</span> },
-            { key: "reference", header: "Vendor", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).reference || "—"}</span> },
-            { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as ExpenseLine; return attachmentCell("expense", row.id, row.attachment); } },
-            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
-              const row = r as ExpenseLine;
-              return (
-                <span className="inline-flex justify-end gap-2">
-                  <button type="button" onClick={() => editExpense(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
-                  <button type="button" onClick={() => deleteExpense(row)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
-                </span>
-              );
-            } },
-          ],
-        };
-      case "assetPurchase":
-        return {
-          minWidth: 1360,
-          emptyText: "No fixed asset purchases for the selected filters.",
-          columns: [
-            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as AssetPurchaseLine).date)}</span> },
-            { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.itemName}{x.description && <small className="block text-[var(--text-muted)]">{x.description}</small>}</span>; } },
-            // The destination account is the point of the whole record, so it is a first-class
-            // column rather than something to be inferred from the category.
-            { key: "assetAccount", header: "Asset Account", width: "minmax(160px,1fr)", render: (r) => <span className="text-sky-300">{(r as AssetPurchaseLine).assetAccountName}</span> },
-            { key: "account", header: "Paid From", width: "minmax(150px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span>{x.financeAccountName ?? "—"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
-            { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.category}{x.whtTaxSection && <small className="block text-[var(--text-muted)]">s.{x.whtTaxSection}</small>}</span>; } },
-            // Cost, not "gross expense": this figure is what the asset is carried at.
-            { key: "amount", header: "Cost", width: "120px", align: "right", render: (r) => money((r as AssetPurchaseLine).amount, "text-sky-300") },
-            { key: "wht", header: "WHT", width: "120px", align: "right", render: (r) => {
-              const x = r as AssetPurchaseLine;
-              // Positive-test rather than `<= 0`: a missing amount must fall to the dash, and
-              // `undefined <= 0` is false, which used to let it through to the rate below.
-              if (!(x.whtAmount > 0)) return <span className="text-xs text-[var(--text-muted)]">—</span>;
-              return (
-                <span className="whitespace-nowrap">
-                  {money(x.whtAmount, "text-amber-400")}
-                  <small className="block text-[var(--text-muted)]">{Number((x.whtRate ?? 0).toFixed(4))}%</small>
-                </span>
-              );
-            } },
-            { key: "net", header: "Net Paid", width: "120px", align: "right", render: (r) => money((r as AssetPurchaseLine).netPaid) },
-            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as AssetPurchaseLine).projectName}</span> },
-            { key: "vendor", header: "Supplier", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as AssetPurchaseLine).vendor || "—"}</span> },
-            { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as AssetPurchaseLine; return attachmentCell("assetPurchase", row.id, row.attachment); } },
-            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
-              const row = r as AssetPurchaseLine;
-              return (
-                <span className="inline-flex justify-end gap-2">
-                  <button type="button" onClick={() => editAssetPurchase(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
-                  <button type="button" onClick={() => deleteAssetPurchase(row)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
-                </span>
-              );
-            } },
-          ],
-        };
-      // Read-only by design: a deposit is cleared by giving possession or by cancelling the
-      // booking, never by editing this list. There is nothing here to edit or delete.
-      case "customerDeposits":
-        return {
-          minWidth: 1180,
-          emptyText: "No customer deposits held for the selected filters.",
-          columns: [
-            { key: "booking", header: "Booking", width: "140px", render: (r) => <span className="text-[var(--text-primary)] whitespace-nowrap">{(r as CustomerDepositLine).bookingReference}</span> },
-            { key: "customer", header: "Customer", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CustomerDepositLine).customerName}</span> },
-            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as CustomerDepositLine).projectName}</span> },
-            { key: "unit", header: "Unit", width: "110px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as CustomerDepositLine).unitNumber}</span> },
-            { key: "status", header: "Current Status", width: "150px", render: (r) => {
-              // Labelled "Current" on purpose: the money on this row is historical (as at the
-              // selected date) but the status is today's, so a booking can legitimately show a
-              // deposit balance next to a status that has since moved past it.
-              const row = r as CustomerDepositLine;
-              return (
-                <span className="inline-flex rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-1 text-[10px] font-semibold text-violet-300">
-                  {row.bookingStatus || "—"}
-                </span>
-              );
-            } },
-            { key: "netSale", header: "Net Sale Value", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).netSaleValue) },
-            { key: "cash", header: "Cash Received", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).customerCashReceived, "text-emerald-400") },
-            { key: "balance", header: "Deposit Held", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).depositBalance, "text-violet-300") },
-            { key: "recognised", header: "Cleared By", width: "170px", render: (r) => {
-              // Two different events can clear a deposit and they must not be conflated: possession
-              // turns it into revenue, cancellation turns it into a refund payable. Showing a
-              // cancellation date under a "Possession" heading would assert a handover that never
-              // happened, so the event is named alongside its date.
-              const row = r as CustomerDepositLine;
-              const cleared = row.recognitionDate
-                ? { label: "Possession", date: row.recognitionDate, tone: "text-emerald-400" }
-                : row.cancellationDate
-                  ? { label: "Cancelled", date: row.cancellationDate, tone: "text-rose-400" }
-                  : null;
-              if (!cleared) return <span className="text-[var(--text-secondary)]">—</span>;
-              return (
-                <span className="text-[var(--text-secondary)]">
-                  <span className={`font-semibold ${cleared.tone}`}>{cleared.label}</span>
-                  {" · "}{formatDate(cleared.date)}
-                </span>
-              );
-            } },
-          ],
-        };
-      case "totalExpenses":
-        return {
-          minWidth: 1150,
-          emptyText: "No costs for the selected filters.",
-          columns: [
-            { key: "date", header: "Date", width: "110px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
-            { key: "project", header: "Project", width: "230px", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).projectName}</span> },
-            // Flexible, like the analogous Category/Description columns on the expense and asset
-            // tables: this is the column that should absorb extra table width. Amount, Attachment
-            // and Actions stay fixed-width right after it, matching every sibling table on this
-            // page — leaving that job to Actions (as a 1fr track) instead stretched it across the
-            // whole remaining width and opened a wide gap before the action buttons.
-            { key: "item", header: "Cost", width: "minmax(220px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
-            { key: "amount", header: "Amount", width: "150px", align: "right", render: (r) => {
-              const row = r as CostLine;
-              // Sign and colour carry what the removed Type column used to say: + is a cost, − is a reduction.
-              return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
-            } },
-            // The receipt, in the list where the cost is actually read. "None" is only honest for
-            // the two kinds that could have carried a file; the other four keep their evidence in
-            // the workflow that owns them, so a dash says "not here" rather than "nothing exists".
-            { key: "attachment", header: "Attachment", width: "130px", render: (r) => {
-              const row = r as CostLine;
-              if (row.source !== "expense" && row.source !== "assetPurchase") {
-                return <span className="text-xs text-[var(--text-muted)]">—</span>;
-              }
-              return attachmentCell(row.source, row.sourceId, row.attachment);
-            } },
-            // Edit and delete where the cost is read, so the breakdown is not a list you have to
-            // leave to correct. Only the two kinds this page owns get them; stopPropagation keeps
-            // the buttons from also firing the row's own open. Fixed width, matching the same
-            // two-icon Actions column on the expense and asset tables.
-            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
-              const row = r as CostLine;
-              if (row.source !== "expense" && row.source !== "assetPurchase") {
-                return <span className="text-xs text-[var(--text-muted)]">↗</span>;
-              }
-              return (
-                <span className="inline-flex justify-end gap-2">
-                  <button type="button" onClick={(e) => { e.stopPropagation(); void openCostRow(row); }} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
-                  <button type="button" onClick={(e) => { e.stopPropagation(); void deleteCostRow(row); }} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
-                </span>
-              );
-            } },
-          ],
-        };
-      case "netProfit":
-        return {
-          minWidth: 760,
-          emptyText: "No activity for the selected filters.",
-          columns: [
-            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as NetProfitLine).date)}</span> },
-            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).projectName}</span> },
-            { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).label}</span> },
-            // Two kinds. Revenue and Expense, and the signed amounts add up to the Net Profit card.
-            { key: "kind", header: "Type", width: "150px", render: (r) => {
-              const row = r as NetProfitLine;
-              const style = row.kind === "revenue"
-                ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                : "text-rose-400 bg-rose-500/10 border-rose-500/20";
-              return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${style}`}>{row.kind === "revenue" ? "Revenue" : "Expense"}</span>;
-            } },
-            { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
-              const row = r as NetProfitLine;
-              return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
-            } },
-          ],
-        };
-      case "outstanding":
-        return {
-          minWidth: 920,
-          emptyText: "No outstanding balances for the selected filters.",
-          columns: [
-            { key: "booking", header: "Booking", width: "140px", render: (r) => <span className="text-[var(--text-primary)] whitespace-nowrap">{(r as OutstandingLine).bookingReference}</span> },
-            { key: "customer", header: "Customer", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as OutstandingLine).customerName}</span> },
-            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OutstandingLine).projectName}</span> },
-            { key: "unit", header: "Unit", width: "110px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OutstandingLine).unitNumber}</span> },
-            { key: "agreed", header: "Agreed Price", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).agreedSalePrice) },
-            { key: "received", header: "Received / credited", width: "155px", align: "right", render: (r) => money((r as OutstandingLine).receivedAmount, "text-emerald-400") },
-            { key: "outstanding", header: "Outstanding", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).outstandingAmount, "text-amber-400") },
-          ],
-        };
-      default: // overdue
-        return {
-          minWidth: 1040,
-          emptyText: "No overdue installments for the selected filters.",
-          columns: [
-            { key: "due", header: "Due Date", width: "130px", render: (r) => <span className="text-rose-400 whitespace-nowrap">{formatDate((r as OverdueLine).dueDate)}</span> },
-            { key: "booking", header: "Booking", width: "140px", render: (r) => <span className="text-[var(--text-primary)] whitespace-nowrap">{(r as OverdueLine).bookingReference}</span> },
-            { key: "customer", header: "Customer", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as OverdueLine).customerName}</span> },
-            { key: "project", header: "Project", width: "minmax(110px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OverdueLine).projectName}</span> },
-            { key: "unit", header: "Unit", width: "100px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OverdueLine).unitNumber}</span> },
-            { key: "inst", header: "Installment", width: "150px", render: (r) => { const row = r as OverdueLine; return <span className="text-[var(--text-secondary)] whitespace-nowrap">#{row.sequenceNumber} · {row.installmentType}</span>; } },
-            { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as OverdueLine).amount) },
-            { key: "paid", header: "Paid", width: "120px", align: "right", render: (r) => money((r as OverdueLine).paidAmount, "text-emerald-400") },
-            { key: "overdue", header: "Overdue", width: "120px", align: "right", render: (r) => money((r as OverdueLine).overdueAmount, "text-orange-400") },
-          ],
-        };
+  const onFilter = (changes: FilterValues) => {
+    if ("project" in changes || "account" in changes || "from" in changes || "to" in changes) {
+      setSummaryLoading(true);
     }
-  })();
-
-  const rowKey = (row: AnyRow, index: number): string => {
-    switch (view) {
-      case "revenue": {
-        const r = row as RevenueLine;
-        return `rev-${r.manualRevenueId ?? "p"}-${r.date}-${index}`;
-      }
-      case "expense":
-        return `exp-${(row as ExpenseLine).id}`;
-      case "totalExpenses":
-        return `cost-${index}`;
-      case "assetPurchase":
-        return `ast-${(row as AssetPurchaseLine).id}`;
-      case "customerDeposits":
-        return `dep-${(row as CustomerDepositLine).bookingId}`;
-      case "outstanding":
-        return `out-${(row as OutstandingLine).bookingReference}`;
-      case "overdue": {
-        const r = row as OverdueLine;
-        return `ovd-${r.bookingReference}-${r.sequenceNumber}-${index}`;
-      }
-      default:
-        return `np-${index}`;
-    }
+    if ("project" in changes) setProjectId(changes.project ?? "");
+    if ("account" in changes) setAccountFilter(changes.account ?? "");
+    if ("from" in changes) setFromDate(changes.from ?? "");
+    if ("to" in changes) setToDate(changes.to ?? "");
   };
 
-  return (
-    <>
-      {/* Header. `fin-head` makes this the size container everything inside responds to:
-          the sidebar is 15rem, takes real layout space and collapses, so the window is
-          not what decides how much room the filter row and the cards actually have. */}
-      <div className="fin-page fin-page--head fin-head py-6 sm:py-8">
-        <h1 className="fin-dashboard-title">Finance Overview</h1>
-        <div className="fin-filters">
-          <div className="fin-periods">
-            {PERIODS.map((preset) => {
-              // A financial-year chip is offered only once the client's year start is known.
-              // Until then it could neither name nor filter the right months.
-              const needsFinancialYear = preset === "year" || preset === "lastYear";
-              const unavailable = needsFinancialYear && financialYearStartMonth === null;
-              return (
-                <button
-                  key={preset}
-                  type="button"
-                  disabled={unavailable}
-                  title={unavailable
-                    ? (financialYearFailed
-                      ? "The financial year setting could not be loaded, so this range cannot be applied."
-                      : "Loading the configured financial year…")
-                    : undefined}
-                  onClick={() => applyPeriod(preset)}
-                  className={`fin-pill ${activePeriod === preset ? "fin-pill--active" : ""} ${unavailable ? "opacity-50" : ""}`}
-                >
-                  {financePeriodLabel(preset, financialYearStartMonth)}
-                </button>
-              );
-            })}
-          </div>
-          {financialYearFailed && (
-            <div role="alert" className="fin-notice fin-notice--gold mt-3">
-              <span className="fin-notice__icon" aria-hidden="true"><IconAlert /></span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <p className="fin-notice__body">
-                Financial year setting unavailable — use a custom From/To range.
-              </p>
-            </div>
-          )}
+  const resetFilters = () => {
+    setSummaryLoading(true);
+    setProjectId("");
+    setAccountFilter("");
+    setFromDate("");
+    setToDate("");
+  };
 
-          <div className="fin-filter-panel">
-            <div className="fin-controls">
-              <div className="fin-field">
-                <span className="fin-field__label">Project</span>
-                <AppSelect value={draftProjectId} onChange={(e) => setDraftProjectId(e.target.value)} className="fin-control" aria-label="Project">
-                  <option value="">All Projects</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>{p.projectName}</option>
-                  ))}
-                </AppSelect>
-              </div>
-              <div className="fin-field">
-                <span className="fin-field__label">Account</span>
-                <AppSelect value={draftAccountFilter} onChange={(e) => setDraftAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
-                  <option value="">All Accounts</option>
-                  {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
-                  <option value="unassigned">Unassigned</option>
-                </AppSelect>
-              </div>
-              <div className="fin-field">
-                <span className="fin-field__label">From</span>
-                <DatePicker aria-label="From" value={draftFromDate} onChange={setDraftFromDate} />
-              </div>
-              <div className="fin-field">
-                <span className="fin-field__label">To</span>
-                <DatePicker aria-label="To" value={draftToDate} onChange={setDraftToDate} />
-              </div>
-              {/* One grid cell, so the optional Clear never spills into a column of its own. */}
-              <div className="fin-actions">
-                <button type="button" className="fin-apply" onClick={applyFilters} disabled={!!draftRangeError}>
-                  <IconRefresh />
-                  Apply
-                </button>
-                {(draftFromDate || draftToDate || draftProjectId || draftAccountFilter) && (
-                  <button type="button" className="fin-clear" onClick={() => { setDraftProjectId(""); setDraftAccountFilter(""); setDraftFromDate(""); setDraftToDate(""); }}>
-                    Clear
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* A half-open or backwards range is refused rather than interpreted. It used to be
-              accepted by the totals and re-read as "all time" (or as the financial year) by the
-              charts, so the screen answered two questions at once without saying so. */}
-          {draftRangeError && (
-            <div role="alert" className="fin-notice fin-notice--gold mt-3">
-              <span className="fin-notice__icon" aria-hidden="true"><IconAlert /></span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <p className="fin-notice__body">{draftRangeError}</p>
-            </div>
-          )}
-        </div>
-
-        {/* Summary cards */}
-        <div className="fin-summary-grid">
-          {summaryCards.map((card) => {
-            const active = card.view != null && view === card.view;
-            // Account Net Movement has no drill-down of its own — it is cash movement, not a list
-            // of records — so that card is not a button pretending to open something.
-            return (
-              <button
-                key={card.label}
-                type="button"
-                disabled={card.view == null}
-                onClick={() => { if (card.view != null) focusView(card.view); }}
-                // One accent per card, declared once: the bottom rule and the icon tint both read
-                // it, so a card can no longer be underlined in one colour and badged in another.
-                style={{ borderBottomColor: card.underline, "--fin-card-accent": card.underline } as CSSProperties}
-                className={`fin-summary-card group ${
-                  card.view == null ? "cursor-default" : "cursor-pointer hover:-translate-y-0.5 hover:border-[var(--border-hover)]"
-                } ${active ? "ring-2 ring-[var(--accent)]" : ""}`}
-              >
-                <span className="fin-summary-icon" aria-hidden="true">
-                  <SummaryIcon label={card.label} />
-                </span>
-                <span className="fin-summary-copy">
-                  <span className="fin-summary-label">{card.label}</span>
-                  <span className={`fin-summary-value ${
-                    summaryError ? "text-[var(--text-muted)]" : card.valueColor}`}>
-                    {summaryLoading ? "…" : summaryError ? "—" : <ShortAmount value={card.value} />}
-                  </span>
-                  {/* Under the amount, not above it. Only three of the seven cards carry a stamp,
-                      and while it sat between the label and the figure it pushed those three
-                      figures down a line — so no two cards in a row lined up. It still qualifies
-                      the number it follows, and now every value in a row sits on one line. */}
-                  {card.note && <span className="fin-summary-note">{card.note}</span>}
-                  {/* The short figure above is rounded, and two rounded cards do not subtract to a
-                      third: read alone, Revenue minus Expenses would not equal Net Profit. So the
-                      exact amount is printed here on every card — not left to a hover, which is
-                      unreachable on a disabled card and on a phone — and the row stays
-                      reconcilable against the tables below and against Reports. */}
-                  {!summaryLoading && !summaryError && (
-                    <span className="fin-summary-full">
-                      Full amount: {exactAmount(card.value)}
-                    </span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Everything the cards cannot say on their own, in one stack rather than as four
-            differently-spaced paragraphs: a failed load, the account filter that changes what
-            the figures mean, the assets already counted inside Expenses, and the tax that is
-            inside them but still in the bank. Each states what it is, the figure, and the one
-            action to take about it. */}
-        <div className="fin-notices">
-          {summaryError && !summaryLoading && (
-            <div role="alert" className="fin-notice fin-notice--rose">
-              <span className="fin-notice__icon" aria-hidden="true"><IconAlert /></span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <span className="fin-notice__title">Totals unavailable</span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <p className="fin-notice__body">{summaryError}</p>
-              <button type="button" className="fin-notice__action" onClick={() => void loadSummary()}>
-                Retry
-              </button>
-            </div>
-          )}
-
-          {/* The whole reason the cards above are renamed. Selecting a bank does not narrow the
-              business to that bank: a sale is recognised at possession and moves no cash, so it
-              belongs to no account and simply is not here. Saying so is the difference between a
-              filtered list and a wrong total. */}
-          {summary && accountSelected && (
-            <div className="fin-notice fin-notice--gold">
-              <span className="fin-notice__icon" aria-hidden="true"><IconFilter /></span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <span className="fin-notice__title">Account filter applied</span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <p className="fin-notice__body">
-                Entries on this account only — not the period's revenue, cost or profit. Sales move
-                no cash, so they sit on no account and Net Profit is not reported here.
-              </p>
-              <button type="button" className="fin-notice__action" onClick={() => { setAccountFilter(""); setDraftAccountFilter(""); }}>
-                Clear the account filter
-              </button>
-            </div>
-          )}
-
-          {/* Spelled out rather than left to be inferred: the same amount appears in two cards, and
-              a reader who assumes those are separate totals will double-count the period's
-              spending. */}
-          {summary && !accountSelected && summary.totalAssetPurchases > 0 && (
-            <div className="fin-notice fin-notice--sky">
-              <span className="fin-notice__icon" aria-hidden="true"><IconAsset /></span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <span className="fin-notice__title">Fixed assets already counted</span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <p className="fin-notice__body">
-                Total Expenses already includes the{" "}
-                <span className="fin-notice__value">{formatMoney(summary.totalAssetPurchases)}</span>
-                {" "}of fixed assets — don't add them on top.
-              </p>
-              <Link to="/finance/reports" className="fin-notice__action">
-                See Reports <span aria-hidden="true">→</span>
-              </Link>
-            </div>
-          )}
-
-          {summary && summary.whtWithheld > 0 && (
-            <div className="fin-notice fin-notice--gold">
-              <span className="fin-notice__icon" aria-hidden="true"><IconBank /></span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <span className="fin-notice__title">WHT payable to FBR</span>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              <p className="fin-notice__body fin-notice__body--fit">
-                <span className="fin-notice__value">{formatMoney(summary.whtWithheld)}</span> pending deposit
-              </p>
-              <span className="fin-notice__rule" aria-hidden="true" />
-              {/* The gross-vs-net caveat travels with the figure it qualifies, so the reader is
-                  told why Expenses is larger than the cash that left the bank at the moment they
-                  are looking at the amount that explains the difference. */}
-              <span className="fin-notice__hint">
-                <IconInfo />
-                Expense totals include withheld tax
-              </span>
-              <Link to="/finance/settings" className="fin-notice__action">
-                View WHT payable <span aria-hidden="true">→</span>
-              </Link>
-            </div>
-          )}
-        </div>
-
-        {summary && summary.accountCurrentBalance != null && (
-          <div className="fin-balance">
-            <div className="fin-balance__item">
-              <span className="fin-balance__label">Current Balance{(fromDate || toDate) ? " (to period end)" : ""}</span>
-              <span className={`fin-balance__value fin-balance__value--lead ${summary.accountCurrentBalance >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{formatMoney(summary.accountCurrentBalance)}</span>
-            </div>
-            <div className="fin-balance__item">
-              <span className="fin-balance__label">Opening Balance</span>
-              <span className="fin-balance__value">{formatMoney(summary.accountOpeningBalance ?? 0)}</span>
-            </div>
-            {/* Cash movement, not profit: expenses count at what actually left the account and
-                FBR deposits count too. The two diverge as soon as any tax is withheld. */}
-            <div className="fin-balance__item">
-              <span className="fin-balance__label">Net Movement{(fromDate || toDate) ? " (period)" : ""}</span>
-              <span className={`fin-balance__value ${(summary.accountNetMovement ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400"}`}>{formatMoney(summary.accountNetMovement ?? 0)}</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Content */}
-      <div className="fin-page fin-body py-8">
-        {/* Actions. No heading: the selected card above already names what the table is showing,
-            and a title repeating it was a line of furniture rather than information. */}
-        {/* Centred rather than flush right: justify-content applies to each wrapped line on its own,
-            so the short second row sits under the middle of the long first one instead of hanging
-            off its right edge. */}
-        <div className="fin-quick-actions">
-          <Link to="/finance/reports" className="fin-quick-action"><IconReport />Financial Reports</Link>
-          <Link to="/finance/partners" className="fin-quick-action"><IconPartners />Capital Partners</Link>
-          <Link to="/finance/loans" className="fin-quick-action"><IconLoan />Loans</Link>
-          <Link to="/finance/staff-cash" className="fin-quick-action"><IconCash />Cash with Staff</Link>
-          <Link to="/finance/accounts" className="fin-quick-action"><IconSettings />Manage Accounts</Link>
-          <Link to="/finance/settings" className="fin-quick-action"><IconCategories />Tax &amp; Categories</Link>
-          <Link to="/finance/commissions-rebates" className="fin-quick-action"><IconCommission />Commissions &amp; Rebates</Link>
-          <button className="fin-quick-action" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}><IconPlus />Add Revenue</button>
-          <button className="fin-quick-action" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}><IconAsset />Add Fixed Asset</button>
-          <button className="fin-quick-action fin-quick-action--primary" onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}><IconMinus />Add Expense</button>
-        </div>
-
-        {(error ?? rowError) && (
-          <div className="mb-4 rounded-2xl border border-rose-500/20 bg-rose-500/[0.06] px-5 py-4 text-sm text-rose-300">
-            {error ?? rowError}
-          </div>
-        )}
-
-        <VirtualInfiniteTable<AnyRow>
-          columns={columns}
-          rows={rows}
-          rowKey={rowKey}
-          loading={loading}
-          loadingMore={loadingMore}
-          hasMore={hasMore}
-          onLoadMore={loadMore}
-          emptyText={emptyText}
-          minWidth={minWidth}
-          resetKey={`${view}|${projectId}|${fromDate}|${toDate}`}
-          onRowClick={view === "totalExpenses" ? (r) => void openCostRow(r as CostLine) : undefined}
-          rowAction={view === "totalExpenses" ? (r) => COST_ROW_ACTIONS[(r as CostLine).source] ?? null : undefined}
-        />
-
-        {/* Charts — driven by the same filters as everything above */}
-        {/* The bars cover exactly the period the cards do, in windows the server chose so that every
-            day of the range falls inside one of them. They are aggregated when the range is long,
-            never sampled — a chart that drew every third quarter under a card covering all of them
-            was showing roughly a third of the money and saying nothing about it. */}
-        {/* The bars are the cards over narrower windows, so an account filter narrows them the same
-            way — including dropping the recognised sales that belong to no account. Unlabelled, the
-            chart reads as the whole business. Without that filter the axis already states the range
-            it covers, so the caption only earns its place when it says something the chart cannot. */}
-        {chartData && chartData.series.length > 0 && accountSelected && (
-          <div className="fin-notice fin-notice--gold mt-6">
-            <span className="fin-notice__icon" aria-hidden="true"><IconFilter /></span>
-            <span className="fin-notice__rule" aria-hidden="true" />
-            <p className="fin-notice__body">
-              Scoped to the selected account, exactly as the figures above are.
-            </p>
-          </div>
-        )}
-        <FinanceCharts data={chartData} loading={summaryLoading} formatMoney={formatMoney} />
-      </div>
-
-      {/* Revenue modal */}
-      {revenueForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { if (!saving) resetForms(); }} />
-          <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
-            <div className="border-b border-[var(--border)] px-6 py-4">
-              <h3 className="text-lg font-semibold text-[var(--text-heading)]">
-                {revenueForm.id ? "Edit Manual Revenue" : "Add Manual Revenue"}
-              </h3>
-            </div>
-            <div className="space-y-4 p-6">
-              {formError && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{formError}</p>}
-              <FormSelect label="Project" value={revenueForm.projectId} onChange={(v) => setRevenueForm({ ...revenueForm, projectId: v })}>
-                <option value="">General (no specific project)</option>
-                {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
-              </FormSelect>
-              <FormSelect label="Received In Account" value={revenueForm.financeAccountId} onChange={(v) => setRevenueForm({ ...revenueForm, financeAccountId: v })}>
-                <option value="">Select account</option>
-                {financeAccounts.filter((a) => !isStaffFloat(a) && (a.isActive || String(a.id) === revenueForm.financeAccountId)).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>)}
-              </FormSelect>
-              <FormSelect
-                label="Revenue Category"
-                value={revenueForm.revenueCategoryId}
-                onChange={(v) => {
-                  const category = revenueCategories.find((item) => String(item.id) === v);
-                  setRevenueForm({ ...revenueForm, revenueCategoryId: v, revenueType: category?.name ?? revenueForm.revenueType });
-                }}
-              >
-                <option value="">{revenueCategoriesLoading ? "Loading categories…" : "Select a category"}</option>
-                {revenueCategories.filter((item) => item.isActive || String(item.id) === revenueForm.revenueCategoryId)
-                  .map((item) => <option key={item.id} value={item.id}>{item.name}{item.isActive ? "" : " (Retired)"}</option>)}
-              </FormSelect>
-              {/* Cancelling a DAMS booking already recognises the retained amount as income, on the
-                  cancellation date, out of the customer's deposit. Typing it in here as well counts
-                  the same forfeiture twice, and because manual revenue is an independent record
-                  nothing downstream can detect it. The head stays for forfeitures that predate
-                  go-live or never were a DAMS booking — said here, where the choice is made. */}
-              {revenueCategories.some((item) =>
-                String(item.id) === revenueForm.revenueCategoryId && item.code === CANCELLATION_REVENUE_CODE) && (
-                <p role="alert" className="text-xs text-amber-300 md:col-span-2">
-                  Only for a forfeiture from outside DAMS — before go-live, or on something that was
-                  never a booking here. Cancelling a booking in DAMS records the retained amount as
-                  income by itself, so entering it again here would count it twice.
-                </p>
-              )}
-              <FormInput label="Amount (Rs)" type="number" value={revenueForm.amount} onChange={(v) => setRevenueForm({ ...revenueForm, amount: v })} />
-              <DatePicker label="Date" required max={pakistanToday()} value={revenueForm.date} onChange={(date) => setRevenueForm({ ...revenueForm, date })} />
-              <FormInput label="Reference (optional)" value={revenueForm.reference} onChange={(v) => setRevenueForm({ ...revenueForm, reference: v })} />
-              <FormInput label="Description (optional)" value={revenueForm.description} onChange={(v) => setRevenueForm({ ...revenueForm, description: v })} />
-              <FinanceAttachmentField
-                existing={revenueForm.attachment}
-                selected={revenueForm.selectedAttachment}
-                removeExisting={revenueForm.removeAttachment}
-                disabled={saving}
-                onSelected={(file) => setRevenueForm((current) => current ? { ...current, selectedAttachment: file } : current)}
-                onRemoveExisting={(remove) => setRevenueForm((current) => current ? { ...current, removeAttachment: remove } : current)}
-                onViewExisting={() => { if (revenueForm.id && revenueForm.attachment) void accessAttachment("revenue", revenueForm.id, revenueForm.attachment, false); }}
-                onDownloadExisting={() => { if (revenueForm.id && revenueForm.attachment) void accessAttachment("revenue", revenueForm.id, revenueForm.attachment, true); }}
-              />
-            </div>
-            <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
-              <Button variant="ghost" onClick={resetForms} disabled={saving}>Cancel</Button>
-              <Button onClick={submitRevenue} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Fixed-asset purchase modal. Field order mirrors the expense form so the two feel like the
-          same task, with the asset account added as the one thing an expense has no equivalent of. */}
-      {assetForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { if (!saving) resetForms(); }} />
-          <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
-            <div className="border-b border-[var(--border)] px-6 py-4">
-              <h3 className="text-lg font-semibold text-[var(--text-heading)]">
-                {assetForm.id ? "Edit Fixed Asset Purchase" : "Record Fixed Asset Purchase"}
-              </h3>
-              {/* Both halves of the truth, on the form that creates it: the money is gone from
-                  profit and the company still owns the thing it bought. It used to say the formal
-                  P&L did not deduct the purchase; it does, and leaving that sentence up would have
-                  had an operator record a purchase expecting the statement not to move. */}
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Net Profit falls by the full purchase price — on this dashboard and on the Profit
-                &amp; Loss statement alike — and the asset still appears on the Balance Sheet at
-                cost. For construction, site work or materials being consumed, use Expenses instead.
-              </p>
-            </div>
-            <div className="space-y-4 p-6">
-              {formError && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{formError}</p>}
-              <FormInput label="What was bought" value={assetForm.itemName} onChange={(v) => setAssetForm({ ...assetForm, itemName: v })} />
-              {/* Fixed-asset accounts only. The row's own destination is re-added below when it is
-                  not in the list — an old work-in-progress purchase must stay correctable in place
-                  rather than being pushed onto the wrong account by a blank select. */}
-              <FormSelect label="Asset Account" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
-                <option value="">{assetAccountsLoading ? "Loading asset accounts…" : "Select a fixed asset account"}</option>
-                {assetAccounts.filter((a) => a.isActive || String(a.id) === assetForm.assetAccountId).map((a) => (
-                  <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>
-                ))}
-                {assetForm.assetAccountId
-                  && !assetAccounts.some((a) => String(a.id) === assetForm.assetAccountId)
-                  && <option value={assetForm.assetAccountId}>{assetForm.assetAccountName} (as recorded)</option>}
-              </FormSelect>
-              <FormSelect label="Paid From Account" value={assetForm.financeAccountId} onChange={(v) => setAssetForm({ ...assetForm, financeAccountId: v })}>
-                <option value="">Select account</option>
-                {financeAccounts.filter((a) => !isStaffFloat(a) && (a.isActive || String(a.id) === assetForm.financeAccountId)).map((a) => (
-                  <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>
-                ))}
-              </FormSelect>
-              <FormSelect label="Project" value={assetForm.projectId} onChange={(v) => setAssetForm({ ...assetForm, projectId: v })}>
-                <option value="">General (no specific project)</option>
-                {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
-              </FormSelect>
-              {/* The same managed heads as expenses: the annual withholding allowance is one
-                  aggregate per supplier per section, covering capital and revenue purchases alike. */}
-              <FormSelect
-                label="Category (for tax)"
-                value={assetForm.categoryId}
-                onChange={(v) => setAssetForm({
-                  ...assetForm,
-                  categoryId: v,
-                  category: expenseCategories.find((c) => String(c.id) === v)?.name ?? "",
-                  wht: v ? assetForm.wht : emptyWht(),
-                })}
-              >
-                <option value="">{whtLookupsLoading ? "Loading categories…" : "Select a category"}</option>
-                {expenseCategories
-                  .filter((c) => c.isActive || String(c.id) === assetForm.categoryId)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}{c.isActive ? "" : " (Retired)"}
-                      {c.isWhtApplicable && c.taxSection ? ` — s.${c.taxSection}` : ""}
-                    </option>
-                  ))}
-              </FormSelect>
-              <FormSelect
-                label="Supplier"
-                value={assetForm.vendorId || CUSTOM_TYPE}
-                onChange={(v) => setAssetForm({
-                  ...assetForm,
-                  vendorId: v === CUSTOM_TYPE ? "" : v,
-                  vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
-                })}
-              >
-                <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading suppliers…" : "One-off supplier (enter manually)…"}</option>
-                {vendors
-                  .filter((v) => v.isActive || String(v.id) === assetForm.vendorId)
-                  .map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name} — {v.filerStatus === "NonFiler" ? "Non-filer" : v.filerStatus}
-                      {v.isActive ? "" : " (Inactive)"}
-                    </option>
-                  ))}
-              </FormSelect>
-              {!assetForm.vendorId && (
-                <FormInput
-                  label="Supplier / Reference (optional)"
-                  value={assetForm.vendor}
-                  onChange={(v) => setAssetForm({ ...assetForm, vendor: v })}
-                />
-              )}
-              <FormInput label="Cost (Rs)" type="number" value={assetForm.amount} onChange={(v) => setAssetForm({ ...assetForm, amount: v })} />
-              <DatePicker label="Date" required max={pakistanToday()} value={assetForm.date} onChange={(date) => setAssetForm({ ...assetForm, date })} />
-
-              <ExpenseWhtFields
-                categoryId={assetForm.categoryId}
-                vendorId={assetForm.vendorId}
-                grossAmount={assetForm.amount}
-                date={assetForm.date}
-                excludeExpenseId={null}
-                excludeAssetPurchaseId={assetForm.id}
-                capitalised
-                value={assetForm.wht}
-                disabled={saving}
-                onChange={(wht) => setAssetForm((current) => current ? { ...current, wht } : current)}
-              />
-
-              <FormInput label="Notes (optional)" value={assetForm.description} onChange={(v) => setAssetForm({ ...assetForm, description: v })} />
-              <FinanceAttachmentField
-                existing={assetForm.attachment}
-                selected={assetForm.selectedAttachment}
-                removeExisting={assetForm.removeAttachment}
-                disabled={saving}
-                onSelected={(file) => setAssetForm((current) => current ? { ...current, selectedAttachment: file } : current)}
-                onRemoveExisting={(remove) => setAssetForm((current) => current ? { ...current, removeAttachment: remove } : current)}
-                onViewExisting={() => { if (assetForm.id && assetForm.attachment) void accessAttachment("assetPurchase", assetForm.id, assetForm.attachment, false); }}
-                onDownloadExisting={() => { if (assetForm.id && assetForm.attachment) void accessAttachment("assetPurchase", assetForm.id, assetForm.attachment, true); }}
-              />
-            </div>
-            <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
-              <Button variant="ghost" onClick={resetForms} disabled={saving}>Cancel</Button>
-              <Button onClick={submitAssetPurchase} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Expense modal */}
-      {expenseForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { if (!saving) resetForms(); }} />
-          <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
-            <div className="border-b border-[var(--border)] px-6 py-4">
-              <h3 className="text-lg font-semibold text-[var(--text-heading)]">
-                {expenseForm.id ? "Edit Expense" : "Add Expense"}
-              </h3>
-              {/* Says where construction belongs, because this is the form it belongs on. The pair of
-                  notes here and on the fixed-asset form is what stops the same spend being recorded
-                  twice through two different screens. */}
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Reduces profit on the date it is paid. Construction, materials, labour, contractors
-                and site work all belong here. Use Add Fixed Asset only for something the company
-                keeps, such as equipment or furniture.
-              </p>
-            </div>
-            <div className="space-y-4 p-6">
-              {formError && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{formError}</p>}
-              <FormSelect label="Project" value={expenseForm.projectId} onChange={(v) => setExpenseForm({ ...expenseForm, projectId: v })}>
-                <option value="">General (no specific project)</option>
-                {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
-              </FormSelect>
-              <FormSelect label="Paid From Account" value={expenseForm.financeAccountId} onChange={(v) => setExpenseForm({ ...expenseForm, financeAccountId: v })}>
-                <option value="">Select account</option>
-                {financeAccounts.filter((a) => a.isActive || String(a.id) === expenseForm.financeAccountId).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{isStaffFloat(a) ? " · Staff float" : ""}{a.isActive ? "" : " (Inactive)"}</option>)}
-              </FormSelect>
-              <FormSelect
-                label="Category"
-                value={expenseForm.categoryId || CUSTOM_TYPE}
-                onChange={(v) => setExpenseForm({
-                  ...expenseForm,
-                  categoryId: v === CUSTOM_TYPE ? "" : v,
-                  // Leaving the managed list means leaving the rate table behind, so the tax
-                  // fields reset rather than carrying a rate that no longer has a source.
-                  category: v === CUSTOM_TYPE ? "" : (expenseCategories.find((c) => String(c.id) === v)?.name ?? ""),
-                  wht: v === CUSTOM_TYPE ? emptyWht() : expenseForm.wht,
-                })}
-              >
-                {/* Free text is only offered to a row that already has it — an expense recorded
-                    before the managed list existed. Offering it on a new expense would be a
-                    one-click way past the rate table. */}
-                {expenseForm.legacyCategory ? (
-                  <option value={CUSTOM_TYPE}>Keep the original text — “{expenseForm.category}”</option>
-                ) : (
-                  <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading categories…" : "Select a category"}</option>
-                )}
-                {expenseCategories
-                  .filter((c) => c.isActive || String(c.id) === expenseForm.categoryId)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}{c.isActive ? "" : " (Retired)"}
-                      {c.isWhtApplicable && c.taxSection ? ` — s.${c.taxSection}` : ""}
-                    </option>
-                  ))}
-              </FormSelect>
-              {expenseForm.legacyCategory && !expenseForm.categoryId && (
-                <FormInput
-                  label="Original Category Text"
-                  value={expenseForm.category}
-                  onChange={(v) => setExpenseForm({ ...expenseForm, category: v })}
-                />
-              )}
-              <FormSelect
-                label="Vendor"
-                value={expenseForm.vendorId || CUSTOM_TYPE}
-                onChange={(v) => setExpenseForm({
-                  ...expenseForm,
-                  vendorId: v === CUSTOM_TYPE ? "" : v,
-                  vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
-                })}
-              >
-                <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading vendors…" : "One-off payee (enter manually)…"}</option>
-                {vendors
-                  .filter((v) => v.isActive || String(v.id) === expenseForm.vendorId)
-                  .map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name} — {v.filerStatus === "NonFiler" ? "Non-filer" : v.filerStatus}
-                      {v.isActive ? "" : " (Inactive)"}
-                    </option>
-                  ))}
-              </FormSelect>
-              {!expenseForm.vendorId && (
-                <FormInput
-                  label="Vendor / Reference (optional)"
-                  value={expenseForm.vendor}
-                  onChange={(v) => setExpenseForm({ ...expenseForm, vendor: v })}
-                />
-              )}
-              <FormInput label="Gross Amount (Rs)" type="number" value={expenseForm.amount} onChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} />
-              <DatePicker label="Date" required max={pakistanToday()} value={expenseForm.date} onChange={(date) => setExpenseForm({ ...expenseForm, date })} />
-
-              <ExpenseWhtFields
-                categoryId={expenseForm.categoryId}
-                vendorId={expenseForm.vendorId}
-                grossAmount={expenseForm.amount}
-                date={expenseForm.date}
-                excludeExpenseId={expenseForm.id}
-                value={expenseForm.wht}
-                disabled={saving}
-                onChange={(wht) => setExpenseForm((current) => current ? { ...current, wht } : current)}
-              />
-
-              <FormInput label="Description (optional)" value={expenseForm.description} onChange={(v) => setExpenseForm({ ...expenseForm, description: v })} />
-              <FinanceAttachmentField
-                existing={expenseForm.attachment}
-                selected={expenseForm.selectedAttachment}
-                removeExisting={expenseForm.removeAttachment}
-                disabled={saving}
-                onSelected={(file) => setExpenseForm((current) => current ? { ...current, selectedAttachment: file } : current)}
-                onRemoveExisting={(remove) => setExpenseForm((current) => current ? { ...current, removeAttachment: remove } : current)}
-                onViewExisting={() => { if (expenseForm.id && expenseForm.attachment) void accessAttachment("expense", expenseForm.id, expenseForm.attachment, false); }}
-                onDownloadExisting={() => { if (expenseForm.id && expenseForm.attachment) void accessAttachment("expense", expenseForm.id, expenseForm.attachment, true); }}
-              />
-            </div>
-            <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
-              <Button variant="ghost" onClick={resetForms} disabled={saving}>Cancel</Button>
-              <Button onClick={submitExpense} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-function FormInput({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-medium text-[var(--text-secondary)]">{label}</label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
-      />
-    </div>
-  );
-}
-
-type FinanceIconType = "revenue" | "expense" | "asset" | "deposits" | "profit" | "outstanding" | "overdue" | "report" | "partners" | "loan" | "cash" | "settings" | "categories" | "commission" | "plus" | "minus" | "refresh" | "filter" | "info" | "alert";
-
-function FinanceIcon({ type }: { type: FinanceIconType }) {
-  const common = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
-  switch (type) {
-    case "revenue": return <svg {...common}><path d="M3 18 9 12l4 3 8-8" /><path d="M15 7h6v6" /><path d="M4 21h16" /><path d="M6 18v3M10 15v6M14 16v5M18 11v10" /></svg>;
-    case "expense": return <svg {...common}><path d="m4 5 6 6-4 4 6 6" /><path d="M20 5 14 11l4 4-6 6" /><path d="M4 5h5M20 5h-5" /></svg>;
-    case "asset": return <svg {...common}><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 5V3h8v2M8 12h8M12 9v6" /></svg>;
-    case "deposits": return <svg {...common}><path d="M3 10 12 4l9 6" /><path d="M5 10v9M19 10v9M9 10v9M15 10v9M3 20h18" /><path d="M12 4v16" /></svg>;
-    case "profit": return <svg {...common}><path d="M4 20V12M10 20V7M16 20V10M22 20H2" /><path d="m4 9 5-4 4 2 7-5" /></svg>;
-    case "outstanding": return <svg {...common}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h5M8 16h3M17 15v5M14.5 17.5H20" /></svg>;
-    case "overdue": return <svg {...common}><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3 2" /></svg>;
-    case "report": return <svg {...common}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M8 17v-5M12 17V8M16 17v-3" /></svg>;
-    case "partners": return <svg {...common}><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0 1 12 0M16 5.5a3 3 0 0 1 0 5.5M17 14a5 5 0 0 1 4 6" /></svg>;
-    case "loan": return <svg {...common}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h4" /><path d="M16 16h.01" /></svg>;
-    case "cash": return <svg {...common}><rect x="3" y="6" width="18" height="12" rx="2" /><circle cx="12" cy="12" r="3" /><path d="M3 9a3 3 0 0 0 3-3M21 9a3 3 0 0 1-3-3M3 15a3 3 0 0 1 3 3M21 15a3 3 0 0 0-3 3" /></svg>;
-    case "settings": return <svg {...common}><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></svg>;
-    case "categories": return <svg {...common}><path d="M4 5h16M4 12h16M4 19h16" /><circle cx="8" cy="5" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="10" cy="19" r="2" /></svg>;
-    case "commission": return <svg {...common}><path d="m6 6 12 12M18 6 6 18" /><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="18" r="2.5" /><path d="M3 12h4M17 12h4" /></svg>;
-    case "plus": return <svg {...common}><path d="M12 5v14M5 12h14" /></svg>;
-    case "minus": return <svg {...common}><path d="M5 12h14" /></svg>;
-    case "refresh": return <svg {...common}><path d="M20 11a8 8 0 0 0-14.8-3L3 10" /><path d="M3 5v5h5M4 13a8 8 0 0 0 14.8 3L21 14" /><path d="M21 19v-5h-5" /></svg>;
-    case "filter": return <svg {...common}><path d="M3 5h18l-7 8.2V20l-4 1.5v-8.3Z" /></svg>;
-    case "info": return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 11.5v4.5M12 8h.01" /></svg>;
-    case "alert": return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5M12 16h.01" /></svg>;
+  if (access === "wait") return null;
+  if (access === "deny") {
+    return <p className="m-0 px-4 py-8 text-body font-bold text-ink">You don&apos;t have access to Finance.</p>;
   }
-}
 
-function SummaryIcon({ label }: { label: string }) {
-  const type: FinanceIconType = label.includes("Revenue") ? "revenue" : label.includes("Expenses") || label.includes("Costs") ? "expense" : label.includes("Assets") ? "asset" : label.includes("Deposits") ? "deposits" : label.includes("Profit") || label.includes("Movement") ? "profit" : label.includes("Outstanding") ? "outstanding" : "overdue";
-  return <FinanceIcon type={type} />;
-}
-function IconRefresh() { return <FinanceIcon type="refresh" />; }
-function IconReport() { return <FinanceIcon type="report" />; }
-function IconPartners() { return <FinanceIcon type="partners" />; }
-function IconLoan() { return <FinanceIcon type="loan" />; }
-function IconCash() { return <FinanceIcon type="cash" />; }
-function IconSettings() { return <FinanceIcon type="settings" />; }
-function IconCategories() { return <FinanceIcon type="categories" />; }
-function IconCommission() { return <FinanceIcon type="commission" />; }
-function IconPlus() { return <FinanceIcon type="plus" />; }
-function IconAsset() { return <FinanceIcon type="asset" />; }
-function IconMinus() { return <FinanceIcon type="minus" />; }
-function IconFilter() { return <FinanceIcon type="filter" />; }
-function IconInfo() { return <FinanceIcon type="info" />; }
-function IconAlert() { return <FinanceIcon type="alert" />; }
-/** The WHT bar's badge. Same building the Customer Deposits card uses — both are money held. */
-function IconBank() { return <FinanceIcon type="deposits" />; }
+  const singleAccount = accountSelected && accountFilter !== "unassigned";
+  const shown = list.rows.length;
+  const total = list.total;
 
-function IconPencil() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>;
-}
-function IconTrash() {
-  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>;
-}
-
-function FormSelect({ label, value, onChange, children }: { label: string; value: string; onChange: (v: string) => void; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-medium text-[var(--text-secondary)]">{label}</label>
-      <AppSelect
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
-      >
-        {children}
-      </AppSelect>
+    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7">
+      {isPhone ? (
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="m-0 text-[22px] font-extrabold text-ink">Finance</h1>
+          <div className="flex items-center gap-2">
+            <Button icon={<IconPlus size={16} />} onClick={openExpense}>Add expense</Button>
+            <Button iconOnly variant="outline" icon={<IconMore size={18} />} aria-label="More actions" onClick={() => setMoreOpen(true)} />
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <PageHeader title="Finance" actions={<FinanceAddButtons onRevenue={openRevenue} onAsset={openAsset} onExpense={openExpense} />} />
+          <FinanceLinkRow />
+        </div>
+      )}
+
+      <FilterBar
+        filters={[
+          {
+            type: "period",
+            key: "period",
+            label: "Period",
+            fromKey: "from",
+            toKey: "to",
+            rangeFor: (preset) => buildPeriodRange(preset, startMonth),
+            financialYear: yearStatus,
+          },
+          {
+            type: "select",
+            key: "project",
+            label: "Project",
+            options: projects.map((project) => ({ value: String(project.id), label: project.projectName })),
+          },
+          {
+            type: "select",
+            key: "account",
+            label: "Account",
+            options: [
+              ...accounts.map((account) => ({ value: String(account.id), label: filterAccountLabel(account) })),
+              { value: "unassigned", label: "Unassigned" },
+            ],
+          },
+          { type: "dateRange", fromKey: "from", toKey: "to", max: pakistanToday() },
+        ]}
+        values={{ project: projectId, account: accountFilter, from: fromDate, to: toDate }}
+        onChange={onFilter}
+        onReset={resetFilters}
+      />
+
+      {accountLookupError && (
+        <Notice
+          tone="red"
+          role="alert"
+          title={accountLookupError}
+          action={<Button variant="outline" onClick={retryAccounts}>Try again</Button>}
+        />
+      )}
+
+      {yearFailed && (
+        <Notice tone="gold" title="Financial year setting unavailable — use a custom From/To range." />
+      )}
+
+      <FinanceCards
+        summary={summary}
+        loading={summaryLoading}
+        error={!!summaryError}
+        accountSelected={accountSelected}
+        view={shownView}
+        onView={setView}
+      />
+
+      <FinanceNotices
+        summaryError={summaryError}
+        onRetryTotals={() => void loadSummary()}
+        payable={payable}
+        payableError={payableError}
+        onRetryPayable={() => void loadPayable()}
+        accountSelected={accountSelected}
+        onClearAccount={() => onFilter({ account: "" })}
+        summary={summary}
+        summaryLoading={summaryLoading}
+        showBalance={singleAccount}
+        datesSet={!!fromDate || !!toDate}
+      />
+
+      {list.error && (
+        <Notice
+          tone="red"
+          role="alert"
+          title={list.error}
+          action={<Button variant="outline" onClick={() => list.reload()}>Try again</Button>}
+        />
+      )}
+
+      <FinanceTable
+        view={(list.rows.length > 0 ? viewInQueryKey(list.rowsKey) : null) ?? shownView}
+        rows={list.rows}
+        loading={list.loading}
+        busyKey={busyKey}
+        showEmpty={!list.error}
+        onEditRevenue={(row) => { setExpenseForm(null); setAssetForm(null); setRevenueForm(revenueFormFrom(row)); }}
+        onDeleteRevenue={(row) => {
+          if (row.manualRevenueId == null) return;
+          setPendingDelete({ kind: "revenue", id: row.manualRevenueId, token: row.concurrencyToken ?? "" });
+        }}
+        onOpenCost={(row) => void openCost(row)}
+        onDeleteCost={(row) => void askDeleteCost(row)}
+        onOpenAttachment={(kind, id, attachment) => void openFile(kind, id, attachment, false)}
+        onDownloadAttachment={(kind, id, attachment) => void openFile(kind, id, attachment, true)}
+      />
+
+      <div className="hidden md:block">
+        <Pagination {...list.pagination} itemLabel="entries" />
+      </div>
+      <div className="flex flex-col items-center gap-2 md:hidden">
+        {((total != null && shown < total) || (total == null && list.hasMore)) && (
+          <LoadMore {...list.loadMoreBar} showCount={false} />
+        )}
+        {total != null && total > 0 && (
+          <p className="m-0 text-small text-ink-muted">
+            Showing {shown.toLocaleString("en-PK")} of {total.toLocaleString("en-PK")} entries
+          </p>
+        )}
+      </div>
+
+      <FinanceMoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} onAddRevenue={openRevenue} onAddAsset={openAsset} />
+
+      {revenueForm && (
+        <RevenueDialog
+          form={revenueForm}
+          projects={projects}
+          accounts={accounts}
+          categories={revenueCategories}
+          categoriesLoading={revenueCategoriesLoading}
+          lookupError={revenueLookupError}
+          onRetryLookups={retryRevenueCategories}
+          accountLookupError={accountLookupError}
+          onRetryAccounts={retryAccounts}
+          onChange={setRevenueForm}
+          onClose={() => setRevenueForm(null)}
+          onSaved={refresh}
+          onOpenAttachment={() => { if (revenueForm.id && revenueForm.attachment) void openFile("revenue", revenueForm.id, revenueForm.attachment, false); }}
+          onDownloadAttachment={() => { if (revenueForm.id && revenueForm.attachment) void openFile("revenue", revenueForm.id, revenueForm.attachment, true); }}
+        />
+      )}
+      {expenseForm && (
+        <ExpenseDialog
+          form={expenseForm}
+          projects={projects}
+          accounts={accounts}
+          categories={expenseCategories}
+          vendors={vendors}
+          lookupsLoading={lookupsLoading}
+          lookupError={lookupError}
+          onRetryLookups={retryLookups}
+          accountLookupError={accountLookupError}
+          onRetryAccounts={retryAccounts}
+          onChange={setExpenseForm}
+          onClose={() => setExpenseForm(null)}
+          onSaved={refresh}
+          onOpenAttachment={() => { if (expenseForm.id && expenseForm.attachment) void openFile("expense", expenseForm.id, expenseForm.attachment, false); }}
+          onDownloadAttachment={() => { if (expenseForm.id && expenseForm.attachment) void openFile("expense", expenseForm.id, expenseForm.attachment, true); }}
+        />
+      )}
+      {assetForm && (
+        <AssetPurchaseDialog
+          form={assetForm}
+          projects={projects}
+          accounts={accounts}
+          assetAccounts={assetAccounts}
+          assetAccountsLoading={assetAccountsLoading}
+          categories={expenseCategories}
+          vendors={vendors}
+          lookupsLoading={lookupsLoading}
+          lookupError={lookupError}
+          onRetryLookups={retryLookups}
+          assetLookupError={assetLookupError}
+          onRetryAssetAccounts={retryAssetAccounts}
+          accountLookupError={accountLookupError}
+          onRetryAccounts={retryAccounts}
+          onChange={setAssetForm}
+          onClose={() => setAssetForm(null)}
+          onSaved={refresh}
+          onOpenAttachment={() => { if (assetForm.id && assetForm.attachment) void openFile("assetPurchase", assetForm.id, assetForm.attachment, false); }}
+          onDownloadAttachment={() => { if (assetForm.id && assetForm.attachment) void openFile("assetPurchase", assetForm.id, assetForm.attachment, true); }}
+        />
+      )}
+      <FinanceDeleteDialog
+        pending={pendingDelete}
+        deleting={deleting}
+        onClose={() => { if (!deleting) setPendingDelete(null); }}
+        onConfirm={() => void confirmDelete()}
+      />
     </div>
   );
 }
