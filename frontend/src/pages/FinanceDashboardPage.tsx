@@ -525,7 +525,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         onRetryTotals={() => void loadSummary()}
         payable={payable}
         accountSelected={accountSelected}
-        onClearAccount={() => setAccountFilter("")}
+        onClearAccount={() => onFilter({ account: "" })}
         summary={summary}
         summaryLoading={summaryLoading}
         showBalance={singleAccount}

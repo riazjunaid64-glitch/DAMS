@@ -40,7 +40,7 @@ export type UsePagedListResult<T> = {
   loading: boolean;
   loadingMore: boolean;
   error: string | null;
-  /** 1-based page on desktop; how many pages have been appended on a phone. */
+  /** 1-based page the current rows belong to. It changes only after that page loads. */
   page: number;
   setPage: (page: number) => void;
   loadMore: () => void;
@@ -80,8 +80,9 @@ export function pageAfterEmptyDelete(page: number, itemsOnPage: number): number 
  * Desktop replaces the rows for the page. A phone appends. A filter change (a new `queryKey`)
  * goes back to page 1 but leaves the rows on screen, with `loading` set, until the new page
  * arrives — the table shows its refreshing state instead of going blank. A failed refresh
- * keeps those rows and `rowsKey`, and sets `error`. Answers that arrive late are ignored
- * (`isCurrentRowsRequest`).
+ * keeps those rows, `rowsKey`, and `rowsPage`, and sets `error`. Pagination stays on the
+ * page those rows belong to until a response replaces them. Answers that arrive late are
+ * ignored (`isCurrentRowsRequest`).
  */
 export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_SIZE }: UsePagedListOptions<T>): UsePagedListResult<T> {
   const isPhone = useIsPhone();
@@ -94,6 +95,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
   const [request, setRequest] = useState<Request>({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize });
   const [rows, setRows] = useState<T[]>([]);
   const [rowsKey, setRowsKey] = useState(queryKey);
+  const [rowsPage, setRowsPage] = useState(1);
   const [total, setTotal] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -137,6 +139,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
         }
         setRows((prev) => (append ? [...prev, ...items] : items));
         setRowsKey(activeKey);
+        setRowsPage(page);
         setTotal(result.totalCount ?? null);
         setHasMore(Boolean(result.hasMore) || (result.totalCount != null && skip + items.length < result.totalCount));
         setError(null);
@@ -198,7 +201,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
     loading: switching || loading,
     loadingMore: switching ? false : loadingMore,
     error: switching ? null : error,
-    page: request.page,
+    page: rowsPage,
     setPage,
     loadMore,
     afterDelete,
@@ -206,7 +209,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
     rowsKey,
     hasMore,
     pagination: {
-      page: request.page,
+      page: rowsPage,
       onPageChange: setPage,
       totalCount: total ?? undefined,
       pageSize,

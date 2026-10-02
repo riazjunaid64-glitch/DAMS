@@ -101,6 +101,25 @@ describe("usePagedList", () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it("keeps page 1 pagination when page 2 fails", async () => {
+    const first = deferred<PagedListPage<{ id: string }>>();
+    const fetchPage = vi.fn(() => first.promise);
+    const { result } = renderHook(() => usePagedList({ queryKey: "open", fetchPage, pageSize: 20 }));
+    await act(async () => { first.resolve({ items: [{ id: "page-1" }], totalCount: 40, hasMore: true }); });
+    await waitFor(() => expect(result.current.rows).toEqual([{ id: "page-1" }]));
+    expect(result.current.pagination.page).toBe(1);
+
+    fetchPage.mockImplementation(() => Promise.reject(new Error("The list could not be read.")));
+    act(() => result.current.setPage(2));
+    expect(result.current.rows).toEqual([{ id: "page-1" }]);
+    expect(result.current.pagination.page).toBe(1);
+    await waitFor(() => expect(result.current.error).toBe("The list could not be read."));
+    expect(result.current.rows).toEqual([{ id: "page-1" }]);
+    expect(result.current.page).toBe(1);
+    expect(result.current.pagination.page).toBe(1);
+    expect(result.current.loading).toBe(false);
+  });
+
   it("appends on a phone and steps back when a delete empties the last page", async () => {
     phone(true);
     const all = [{ id: 1 }, { id: 2 }];

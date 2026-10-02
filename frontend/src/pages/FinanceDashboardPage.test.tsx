@@ -60,6 +60,7 @@ let categoryCalls = 0;
 let categoryStatus = 200;
 let rowsCalls = 0;
 let rowsFailAfter = Number.POSITIVE_INFINITY;
+let listTotal: number | null = null;
 let accountOptionCalls = 0;
 let accountOptionsStatus = 200;
 let dashboardGate: Promise<void> | null = null;
@@ -107,7 +108,7 @@ function respond(url: string, init?: RequestInit): { status?: number; body: unkn
   if (url.includes("/rows")) {
     rowsCalls += 1;
     if (rowsCalls > rowsFailAfter) return { status: 500, body: {} };
-    return { body: { items: rows, hasMore: false, totalCount: rows.length } };
+    return { body: { items: rows, hasMore: false, totalCount: listTotal ?? rows.length } };
   }
   if (init?.method === "DELETE") return { body: { message: "Deleted" } };
   return { body: {} };
@@ -147,6 +148,7 @@ beforeEach(() => {
   categoryStatus = 200;
   rowsCalls = 0;
   rowsFailAfter = Number.POSITIVE_INFINITY;
+  listTotal = null;
   accountOptionCalls = 0;
   accountOptionsStatus = 200;
   dashboardGate = null;
@@ -249,6 +251,22 @@ describe("Finance home", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
+  it("keeps page 1 pagination when the next page fails", async () => {
+    listTotal = 40;
+    rowsFailAfter = 1;
+    show();
+    const nav = await screen.findByRole("navigation", { name: "Pagination" });
+    expect(nav.textContent).toContain("1–20");
+    fireEvent.click(within(nav).getByRole("button", { name: "Page 2" }));
+    expect(await screen.findByText(/Unable to load rows/)).toBeTruthy();
+    expect(nav.textContent).toContain("1–20");
+    expect(nav.textContent).not.toContain("21–40");
+    expect(within(nav).getByRole("button", { name: "Page 1" }).getAttribute("aria-current")).toBe("page");
+    expect(within(nav).getByRole("button", { name: "Page 2" }).getAttribute("aria-current")).toBeNull();
+    expect(screen.getAllByText("Deen Square").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
   it("shows an account lookup failure once and retries only when asked", async () => {
     accountOptionsStatus = 500;
     show();
@@ -302,6 +320,21 @@ describe("Finance home", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     expectTotalsLoading();
     await release();
+  });
+
+  it("shows loading totals as soon as the account filter is cleared", async () => {
+    show();
+    await screen.findByRole("button", { name: /Customer deposits/ });
+    fireEvent.click(screen.getByRole("combobox", { name: /Account/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Meezan Bank" }));
+    expect(await screen.findByRole("button", { name: /Revenue on this account/ })).toBeTruthy();
+
+    dashboardGate = new Promise(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Clear account filter" }));
+    const card = screen.getByText("Total revenue").closest("[aria-busy='true']");
+    expect(card).toBeTruthy();
+    expect(card?.textContent ?? "").not.toMatch(/12,?450,?000|1,?24,?50,?000/);
+    expect(screen.queryByText("Revenue on this account")).toBeNull();
   });
 
   it("shows the empty state for the selected filters", async () => {
