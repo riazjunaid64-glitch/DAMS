@@ -20,6 +20,8 @@ export function ExpenseDialog({
   lookupsLoading,
   lookupError = null,
   onRetryLookups,
+  accountLookupError = null,
+  onRetryAccounts,
   onChange,
   onClose,
   onSaved,
@@ -34,6 +36,8 @@ export function ExpenseDialog({
   lookupsLoading: boolean;
   lookupError?: string | null;
   onRetryLookups?: () => void;
+  accountLookupError?: string | null;
+  onRetryAccounts?: () => void;
   onChange: (next: ExpenseFormState) => void;
   onClose: () => void;
   onSaved: () => void;
@@ -128,6 +132,11 @@ export function ExpenseDialog({
       primaryAction={{ label: "Save", onClick: () => void save(), disabled: !canSave, loading: saving }}
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {accountLookupError && (
+          <div className="md:col-span-2">
+            <Notice tone="red" role="alert" title={accountLookupError} action={onRetryAccounts ? <Button variant="outline" onClick={onRetryAccounts}>Try again</Button> : undefined} />
+          </div>
+        )}
         {lookupError && (
           <div className="md:col-span-2">
             <Notice tone="red" role="alert" title={lookupError} action={onRetryLookups ? <Button variant="outline" onClick={onRetryLookups}>Try again</Button> : undefined} />

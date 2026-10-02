@@ -3,7 +3,9 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../components/ui/Toast.tsx";
+import { ProjectsContext } from "../contexts/projectsContextValue.ts";
 import type { User } from "../App.tsx";
+import type { ProjectFromApi } from "../utils/parseProject.ts";
 import { formatMoney } from "../features/finance/home/format.ts";
 import FinanceDashboardPage from "./FinanceDashboardPage.tsx";
 
@@ -12,6 +14,7 @@ const calls: string[] = [];
 vi.mock("../api/api.ts", () => ({
   api: async (url: string, init?: RequestInit) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
+    if (url.includes("/dashboard") && dashboardGate) await dashboardGate;
     const { status = 200, body } = respond(url, init);
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   },
@@ -55,6 +58,11 @@ let rows: unknown[] = [revenueRow];
 let payableCalls = 0;
 let categoryCalls = 0;
 let categoryStatus = 200;
+let rowsCalls = 0;
+let rowsFailAfter = Number.POSITIVE_INFINITY;
+let accountOptionCalls = 0;
+let accountOptionsStatus = 200;
+let dashboardGate: Promise<void> | null = null;
 
 function respond(url: string, init?: RequestInit): { status?: number; body: unknown } {
   if (url.includes("/wht/settings")) {
@@ -72,6 +80,9 @@ function respond(url: string, init?: RequestInit): { status?: number; body: unkn
     return { body: { id: 7, concurrencyToken: "tok" } };
   }
   if (url.includes("/accounts/options")) {
+    if (url.includes("type=7")) return { body: [] };
+    accountOptionCalls += 1;
+    if (accountOptionsStatus !== 200) return { status: accountOptionsStatus, body: {} };
     return { body: [{ id: 3, name: "Meezan Bank", type: 1, accountHolderName: "Adeel Satti", isActive: true }] };
   }
   if (url.includes("/dashboard")) {
@@ -93,17 +104,37 @@ function respond(url: string, init?: RequestInit): { status?: number; body: unkn
       },
     };
   }
-  if (url.includes("/rows")) return { body: { items: rows, hasMore: false, totalCount: rows.length } };
+  if (url.includes("/rows")) {
+    rowsCalls += 1;
+    if (rowsCalls > rowsFailAfter) return { status: 500, body: {} };
+    return { body: { items: rows, hasMore: false, totalCount: rows.length } };
+  }
   if (init?.method === "DELETE") return { body: { message: "Deleted" } };
   return { body: {} };
 }
 
-function show(user: User | null = { userId: "1", role: "Admin", email: "a@b.c" }) {
+const deenSquare = {
+  id: 1,
+  projectName: "Deen Square",
+  location: "",
+  startingDate: "",
+  status: 1,
+  createdAt: "",
+  totalUnits: 0,
+  availableUnits: 0,
+  bookedUnits: 0,
+  soldUnits: 0,
+  floorCount: 0,
+} as ProjectFromApi;
+
+function show(user: User | null = { userId: "1", role: "Admin", email: "a@b.c" }, projects: ProjectFromApi[] = []) {
   return render(
     <MemoryRouter>
-      <ToastProvider>
-        <FinanceDashboardPage user={user} />
-      </ToastProvider>
+      <ProjectsContext.Provider value={{ projects, loading: false, error: null, reload: async () => {} }}>
+        <ToastProvider>
+          <FinanceDashboardPage user={user} />
+        </ToastProvider>
+      </ProjectsContext.Provider>
     </MemoryRouter>,
   );
 }
@@ -114,6 +145,11 @@ beforeEach(() => {
   payableCalls = 0;
   categoryCalls = 0;
   categoryStatus = 200;
+  rowsCalls = 0;
+  rowsFailAfter = Number.POSITIVE_INFINITY;
+  accountOptionCalls = 0;
+  accountOptionsStatus = 200;
+  dashboardGate = null;
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: false,
     media: query,
@@ -198,6 +234,74 @@ describe("Finance home", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
     await within(dialog).findByText(/Revenue categories could not be loaded/);
     expect(categoryCalls).toBe(2);
+  });
+
+  it("keeps the current rows and their columns when the next card fails to load", async () => {
+    rowsFailAfter = 1;
+    show();
+    expect(await screen.findByRole("heading", { name: "Revenue" })).toBeTruthy();
+    expect(screen.getAllByText("Deen Square").length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: /Total expenses/ }));
+    expect(await screen.findByText(/Unable to load rows/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Revenue" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Total expenses" })).toBeNull();
+    expect(screen.getAllByText("Deen Square").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("shows an account lookup failure once and retries only when asked", async () => {
+    accountOptionsStatus = 500;
+    show();
+    expect(await screen.findByText(/Accounts could not be loaded/)).toBeTruthy();
+    const first = accountOptionCalls;
+    expect(first).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: "Add revenue" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add manual revenue" });
+    expect(within(dialog).getByText(/Accounts could not be loaded/)).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("Description (optional)"), { target: { value: "Site note" } });
+    expect(accountOptionCalls).toBe(first);
+    fireEvent.click(screen.getAllByRole("button", { name: "Try again" })[0]);
+    expect((await screen.findAllByText(/Accounts could not be loaded/)).length).toBeGreaterThan(0);
+    expect(accountOptionCalls).toBe(first + 2);
+  });
+
+  it("shows loading totals as soon as the project, period, or reset changes", async () => {
+    let releaseDashboard: (() => void) | null = null;
+    const holdDashboard = () => {
+      dashboardGate = new Promise((resolve) => { releaseDashboard = resolve; });
+    };
+    const release = async () => {
+      const done = releaseDashboard;
+      dashboardGate = null;
+      releaseDashboard = null;
+      done?.();
+      expect(await screen.findByRole("button", { name: /Total revenue/ })).toBeTruthy();
+    };
+    const expectTotalsLoading = () => {
+      const card = screen.getByText("Total revenue").closest("[aria-busy='true']");
+      expect(card).toBeTruthy();
+      expect(card?.textContent ?? "").not.toMatch(/12,?450,?000|1,?24,?50,?000/);
+    };
+
+    show({ userId: "1", role: "Admin", email: "a@b.c" }, [deenSquare]);
+    expect(await screen.findByRole("button", { name: /Total revenue/ })).toBeTruthy();
+
+    holdDashboard();
+    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Deen Square" }));
+    expectTotalsLoading();
+    await release();
+
+    holdDashboard();
+    fireEvent.click(screen.getByRole("combobox", { name: /Period/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Last month" }));
+    expectTotalsLoading();
+    await release();
+
+    holdDashboard();
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expectTotalsLoading();
+    await release();
   });
 
   it("shows the empty state for the selected filters", async () => {

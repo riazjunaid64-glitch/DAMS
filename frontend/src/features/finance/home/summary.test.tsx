@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { render, screen } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, it } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { FinanceNotices } from "./summary.tsx";
 import type { FinancialSummary } from "./types.ts";
@@ -19,6 +19,8 @@ const summary: FinancialSummary = {
   accountCurrentBalance: 20000,
   accountNetMovement: 12500,
 };
+
+afterEach(() => cleanup());
 
 function notices(summaryLoading: boolean) {
   return (
@@ -51,4 +53,25 @@ it("does not keep the previous account's balances while the next summary loads",
   expect(screen.getByText(/20,?000/)).toBeTruthy();
   expect(screen.getByText(/7,?500/)).toBeTruthy();
   expect(screen.getByText(/12,?500/)).toBeTruthy();
+});
+
+it("keeps the account filter notice when the summary is missing", () => {
+  render(
+    <MemoryRouter>
+      <FinanceNotices
+        summaryError="The finance totals could not be loaded, so the figures below are unavailable."
+        onRetryTotals={() => {}}
+        payable={null}
+        accountSelected
+        onClearAccount={() => {}}
+        summary={null}
+        summaryLoading={false}
+        showBalance
+        datesSet={false}
+      />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText(/Account filter on/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Clear account filter" })).toBeTruthy();
+  expect(screen.queryByText("Current balance")).toBeNull();
 });

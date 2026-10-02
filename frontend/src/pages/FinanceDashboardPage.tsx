@@ -59,7 +59,7 @@ const VIEW_PARAM: Record<FinanceView, string> = {
 
 const VIEWS: readonly FinanceView[] = ["revenue", "totalExpenses", "customerDeposits", "overdue"];
 
-/** The list query starts with the open card. Rows from the previous card keep that card's columns. */
+/** The list query starts with the open card. Rows keep that card's columns until a new page replaces them. */
 function viewInQueryKey(queryKey: string): FinanceView | null {
   const head = queryKey.split("|")[0] as FinanceView;
   return VIEWS.includes(head) ? head : null;
@@ -92,6 +92,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [assetLookupError, setAssetLookupError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<FinanceAccountOption[]>([]);
+  const [accountLookupError, setAccountLookupError] = useState<string | null>(null);
   const [assetAccounts, setAssetAccounts] = useState<FinanceAccountOption[]>([]);
   const [assetAccountsLoading, setAssetAccountsLoading] = useState(false);
   const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
@@ -109,6 +110,9 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const summaryRequest = useRef(0);
   const payableRequest = useRef(0);
+  const accountsLoaded = useRef(false);
+  const accountsFailed = useRef(false);
+  const accountsRequest = useRef<Promise<void> | null>(null);
   const assetLoaded = useRef(false);
   const assetFailed = useRef(false);
   const assetRequest = useRef<Promise<void> | null>(null);
@@ -191,26 +195,45 @@ export default function FinanceDashboardPage({ user }: Props) {
     void loadPayable();
   }, [allowed, loadPayable]);
 
-  useEffect(() => {
-    if (!allowed) return;
-    let live = true;
-    void (async () => {
+  const loadAccounts = useCallback((force = false): Promise<void> => {
+    if (!force && (accountsLoaded.current || accountsFailed.current)) return Promise.resolve();
+    if (accountsRequest.current) return accountsRequest.current;
+    setAccountLookupError(null);
+    const request = (async () => {
       try {
         const [regular, staff] = await Promise.all([
           api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true"),
           api("/api/finance/accounts/options?includeInactive=true&type=10"),
         ]);
-        if (!live) return;
-        const regularRows = regular.ok ? await regular.json() as FinanceAccountOption[] : [];
-        const staffRows = staff.ok ? await staff.json() as FinanceAccountOption[] : [];
+        if (!regular.ok) throw new Error(await financeApiError(regular, "Accounts could not be loaded."));
+        if (!staff.ok) throw new Error(await financeApiError(staff, "Accounts could not be loaded."));
+        const regularRows = await regular.json() as FinanceAccountOption[];
+        const staffRows = await staff.json() as FinanceAccountOption[];
         const rows = [...regularRows, ...staffRows];
         setAccounts(rows.filter((row, index) => rows.findIndex((other) => other.id === row.id) === index));
-      } catch {
-        /* The account filter stays on All, and a form says so if it cannot be chosen. */
+        accountsLoaded.current = true;
+        accountsFailed.current = false;
+      } catch (caught) {
+        accountsFailed.current = true;
+        setAccountLookupError(caught instanceof Error && caught.message.trim() ? caught.message : "Accounts could not be loaded.");
+      } finally {
+        accountsRequest.current = null;
       }
     })();
-    return () => { live = false; };
-  }, [allowed]);
+    accountsRequest.current = request;
+    return request;
+  }, []);
+
+  const retryAccounts = useCallback(() => {
+    accountsFailed.current = false;
+    accountsLoaded.current = false;
+    void loadAccounts(true);
+  }, [loadAccounts]);
+
+  useEffect(() => {
+    if (!allowed) return;
+    void loadAccounts();
+  }, [allowed, loadAccounts]);
 
   const loadRevenueCategories = useCallback((force = false): Promise<void> => {
     if (!force && (revenueLoaded.current || revenueFailed.current)) return Promise.resolve();
@@ -399,13 +422,21 @@ export default function FinanceDashboardPage({ user }: Props) {
   };
 
   const onFilter = (changes: FilterValues) => {
-    if ("project" in changes) setProjectId(changes.project ?? "");
-    if ("account" in changes) {
-      setAccountFilter(changes.account ?? "");
+    if ("project" in changes || "account" in changes || "from" in changes || "to" in changes) {
       setSummaryLoading(true);
     }
+    if ("project" in changes) setProjectId(changes.project ?? "");
+    if ("account" in changes) setAccountFilter(changes.account ?? "");
     if ("from" in changes) setFromDate(changes.from ?? "");
     if ("to" in changes) setToDate(changes.to ?? "");
+  };
+
+  const resetFilters = () => {
+    setSummaryLoading(true);
+    setProjectId("");
+    setAccountFilter("");
+    setFromDate("");
+    setToDate("");
   };
 
   if (access === "wait") return null;
@@ -464,8 +495,17 @@ export default function FinanceDashboardPage({ user }: Props) {
         ]}
         values={{ project: projectId, account: accountFilter, from: fromDate, to: toDate }}
         onChange={onFilter}
-        onReset={() => { setProjectId(""); setAccountFilter(""); setFromDate(""); setToDate(""); }}
+        onReset={resetFilters}
       />
+
+      {accountLookupError && (
+        <Notice
+          tone="red"
+          role="alert"
+          title={accountLookupError}
+          action={<Button variant="outline" onClick={retryAccounts}>Try again</Button>}
+        />
+      )}
 
       {yearFailed && (
         <Notice tone="gold" title="Financial year setting unavailable — use a custom From/To range." />
@@ -502,7 +542,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       )}
 
       <FinanceTable
-        view={(list.loading && list.rows.length > 0 ? viewInQueryKey(list.rowsKey) : null) ?? shownView}
+        view={(list.rows.length > 0 ? viewInQueryKey(list.rowsKey) : null) ?? shownView}
         rows={list.rows}
         loading={list.loading}
         busyKey={busyKey}
@@ -543,6 +583,8 @@ export default function FinanceDashboardPage({ user }: Props) {
           categoriesLoading={revenueCategoriesLoading}
           lookupError={revenueLookupError}
           onRetryLookups={retryRevenueCategories}
+          accountLookupError={accountLookupError}
+          onRetryAccounts={retryAccounts}
           onChange={setRevenueForm}
           onClose={() => setRevenueForm(null)}
           onSaved={refresh}
@@ -560,6 +602,8 @@ export default function FinanceDashboardPage({ user }: Props) {
           lookupsLoading={lookupsLoading}
           lookupError={lookupError}
           onRetryLookups={retryLookups}
+          accountLookupError={accountLookupError}
+          onRetryAccounts={retryAccounts}
           onChange={setExpenseForm}
           onClose={() => setExpenseForm(null)}
           onSaved={refresh}
@@ -581,6 +625,8 @@ export default function FinanceDashboardPage({ user }: Props) {
           onRetryLookups={retryLookups}
           assetLookupError={assetLookupError}
           onRetryAssetAccounts={retryAssetAccounts}
+          accountLookupError={accountLookupError}
+          onRetryAccounts={retryAccounts}
           onChange={setAssetForm}
           onClose={() => setAssetForm(null)}
           onSaved={refresh}

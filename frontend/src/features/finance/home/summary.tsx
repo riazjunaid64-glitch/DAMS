@@ -93,7 +93,7 @@ export function FinanceNotices({
           action={<Button variant="outline" onClick={onRetryTotals}>Try again</Button>}
         />
       )}
-      {accountSelected && summary && (
+      {accountSelected && (
         <Notice
           tone="gold"
           title="Account filter on: entries on this account only. Sales move no cash, so they are on no account."

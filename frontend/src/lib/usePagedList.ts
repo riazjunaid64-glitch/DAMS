@@ -79,8 +79,9 @@ export function pageAfterEmptyDelete(page: number, itemsOnPage: number): number 
  *
  * Desktop replaces the rows for the page. A phone appends. A filter change (a new `queryKey`)
  * goes back to page 1 but leaves the rows on screen, with `loading` set, until the new page
- * arrives — the table shows its refreshing state instead of going blank. Answers that arrive
- * late are ignored (`isCurrentRowsRequest`).
+ * arrives — the table shows its refreshing state instead of going blank. A failed refresh
+ * keeps those rows and `rowsKey`, and sets `error`. Answers that arrive late are ignored
+ * (`isCurrentRowsRequest`).
  */
 export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_SIZE }: UsePagedListOptions<T>): UsePagedListResult<T> {
   const isPhone = useIsPhone();
@@ -147,7 +148,6 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
         const message = caught instanceof Error && caught.message.trim() ? caught.message : "Unable to load rows.";
         setError(message);
         setLoading(false);
-        if (!append) setRows([]);
       })
       .finally(() => {
         if (id === reqIdRef.current) setLoadingMore(false);

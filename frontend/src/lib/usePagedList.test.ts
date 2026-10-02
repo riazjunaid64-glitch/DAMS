@@ -81,6 +81,26 @@ describe("usePagedList", () => {
     await waitFor(() => expect(result.current.rows).toEqual([{ id: "reloaded" }]));
   });
 
+  it("keeps the current rows and their query when a filter reload fails", async () => {
+    const first = deferred<PagedListPage<{ id: string }>>();
+    const fetchPage = vi.fn(() => first.promise);
+    const { result, rerender } = renderHook(
+      ({ queryKey }) => usePagedList({ queryKey, fetchPage, pageSize: 20 }),
+      { initialProps: { queryKey: "open" } },
+    );
+    await act(async () => { first.resolve({ items: [{ id: "open-row" }], totalCount: 1, hasMore: false }); });
+    await waitFor(() => expect(result.current.rows).toEqual([{ id: "open-row" }]));
+
+    fetchPage.mockImplementation(() => Promise.reject(new Error("The list could not be read.")));
+    rerender({ queryKey: "closed" });
+    expect(result.current.rows).toEqual([{ id: "open-row" }]);
+    expect(result.current.loading).toBe(true);
+    await waitFor(() => expect(result.current.error).toBe("The list could not be read."));
+    expect(result.current.rows).toEqual([{ id: "open-row" }]);
+    expect(result.current.rowsKey).toBe("open");
+    expect(result.current.loading).toBe(false);
+  });
+
   it("appends on a phone and steps back when a delete empties the last page", async () => {
     phone(true);
     const all = [{ id: 1 }, { id: 2 }];

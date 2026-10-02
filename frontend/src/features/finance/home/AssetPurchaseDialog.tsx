@@ -25,6 +25,8 @@ export function AssetPurchaseDialog({
   onRetryLookups,
   assetLookupError = null,
   onRetryAssetAccounts,
+  accountLookupError = null,
+  onRetryAccounts,
   onChange,
   onClose,
   onSaved,
@@ -43,6 +45,8 @@ export function AssetPurchaseDialog({
   onRetryLookups?: () => void;
   assetLookupError?: string | null;
   onRetryAssetAccounts?: () => void;
+  accountLookupError?: string | null;
+  onRetryAccounts?: () => void;
   onChange: (next: AssetPurchaseFormState) => void;
   onClose: () => void;
   onSaved: () => void;
@@ -131,6 +135,11 @@ export function AssetPurchaseDialog({
       primaryAction={{ label: "Save", onClick: () => void save(), disabled: !canSave, loading: saving }}
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {accountLookupError && (
+          <div className="md:col-span-2">
+            <Notice tone="red" role="alert" title={accountLookupError} action={onRetryAccounts ? <Button variant="outline" onClick={onRetryAccounts}>Try again</Button> : undefined} />
+          </div>
+        )}
         {assetLookupError && (
           <div className="md:col-span-2">
             <Notice tone="red" role="alert" title={assetLookupError} action={onRetryAssetAccounts ? <Button variant="outline" onClick={onRetryAssetAccounts}>Try again</Button> : undefined} />
