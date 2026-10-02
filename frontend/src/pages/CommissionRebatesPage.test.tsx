@@ -151,6 +151,27 @@ describe("Commissions & Rebates: frame, cards and tabs", () => {
     expect(screen.queryByText("The totals could not be loaded.")).toBeNull();
   });
 
+  it("drops the notes and the red tone when a reload of the cards fails", async () => {
+    api.summary.mockResolvedValueOnce({ ...summary, commissionReversalRequired: 5_000 });
+    api.partners.mockResolvedValue(page([partner()]));
+    api.partnerStatus.mockResolvedValue(partner({ isActive: false }));
+    show(admin, "/finance/commissions-rebates?tab=partners");
+    expect(await screen.findByText("of Rs 1,274,000 agreed")).toBeTruthy();
+    expect(screen.getByText("Reversal required").className).toContain("text-danger");
+
+    api.summary.mockRejectedValue(new Error("down"));
+    fireEvent.click((await screen.findAllByRole("button", { name: "More for ali" }))[0]!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Deactivate" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText(/Reason/), { target: { value: "Gone" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Deactivate" }));
+
+    expect(await screen.findByText("The totals could not be loaded.")).toBeTruthy();
+    expect(screen.queryByText("of Rs 1,274,000 agreed")).toBeNull();
+    expect(screen.queryByText("Rs 0 given so far")).toBeNull();
+    expect(screen.getByText("Reversal required").className).not.toContain("text-danger");
+  });
+
   it("opens the tab named in the address, and writes the tab when it changes", async () => {
     show(admin, "/finance/commissions-rebates?tab=rebates");
     expect((await screen.findAllByText("Junaid Riaz satt")).length).toBeGreaterThan(0);

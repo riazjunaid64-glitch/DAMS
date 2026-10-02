@@ -90,6 +90,8 @@ export default function CommissionRebatesPage({ user }: { user: User | null }) {
   }
 
   const cardState = summaryState === "ready" && summary ? "ready" : summaryState === "error" ? "error" : "loading";
+  // Notes and the red tone belong to a figure that is on screen; a failed reload leaves the old summary in memory.
+  const ready = cardState === "ready" && summary !== null;
   const reversal = summary ? cents(summary.commissionReversalRequired + summary.rebateReversalRequired) : 0;
 
   return (
@@ -106,17 +108,17 @@ export default function CommissionRebatesPage({ user }: { user: User | null }) {
         <StatCard
           label="Commission owed"
           value={summary ? formatPkr(summary.payableCommission) : ""}
-          note={summary ? `of ${formatPkr(summary.accruedCommission)} agreed` : undefined}
+          note={ready ? `of ${formatPkr(summary.accruedCommission)} agreed` : undefined}
           state={cardState}
         />
         <StatCard label="Commission paid" value={summary ? formatPkr(summary.commissionPaid) : ""} state={cardState} />
         <StatCard
           label="Rebates"
           value={summary ? formatPkr(summary.rebatesGranted) : ""}
-          note={summary ? `${formatPkr(summary.rebatesAppliedOrPaid)} given so far` : undefined}
+          note={ready ? `${formatPkr(summary.rebatesAppliedOrPaid)} given so far` : undefined}
           state={cardState}
         />
-        <StatCard label="Reversal required" value={formatPkr(reversal)} tone={reversal > 0 ? "red" : undefined} state={cardState} />
+        <StatCard label="Reversal required" value={formatPkr(reversal)} tone={ready && reversal > 0 ? "red" : undefined} state={cardState} />
       </div>
       {summaryState === "error" && (
         <Notice
