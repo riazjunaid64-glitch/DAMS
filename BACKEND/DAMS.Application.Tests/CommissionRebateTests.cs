@@ -11,6 +11,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -242,10 +243,127 @@ public sealed class CommissionRebateTests
                 { Name = $"Paged {i:00}", PartnerType = "Broker", InternalCode = $"PAGE-{i:00}", IsActive = true });
         await harness.Context.SaveChangesAsync();
         var first = await harness.Service.GetPartnersAsync("Paged", true, 0, 5);
-        var second = await harness.Service.GetPartnersAsync("Paged", true, 5, 5);
+        var second = await harness.Service.GetPartnersAsync("Paged", true, 5, 5, includeTotal: true);
         Assert.Equal(5, first.Items.Count);
         Assert.True(first.HasMore);
         Assert.Empty(first.Items.Select(p => p.Id).Intersect(second.Items.Select(p => p.Id)));
+        // The first page counts on its own; a later page counts only when asked, and says the same.
+        Assert.Equal(12, first.TotalCount);
+        Assert.Equal(12, second.TotalCount);
+        Assert.Null((await harness.Service.GetPartnersAsync("Paged", true, 5, 5)).TotalCount);
+    }
+
+    [Fact]
+    public async Task PartnerSearch_FindsTheContactPerson_AndCountsOnlyTheMatches()
+    {
+        await using var harness = await Harness.Create();
+        await harness.Service.CreatePartnerAsync(new SaveThirdPartyPartnerDto
+            { Name = "Khan Estate Agency", PartnerType = "Agency", ContactPerson = "Imran Khan" }, Actor);
+        await harness.Service.CreatePartnerAsync(new SaveThirdPartyPartnerDto
+            { Name = "Bilal Traders", PartnerType = "Dealer", ContactPerson = "Bilal" }, Actor);
+
+        var found = await harness.Service.GetPartnersAsync("Imran", null, 0, 20);
+
+        Assert.Equal("Khan Estate Agency", Assert.Single(found.Items).Name);
+        Assert.Equal(1, found.TotalCount);
+    }
+
+    [Fact]
+    public async Task UpdatingAPartnerWithoutACode_IsRefused_WhileAddingOneStillMakesIt()
+    {
+        await using var harness = await Harness.Create();
+        var added = await harness.Service.CreatePartnerAsync(
+            new SaveThirdPartyPartnerDto { Name = "Code Needed", PartnerType = "Broker", InternalCode = null }, Actor);
+        Assert.StartsWith("PTR-", added.InternalCode);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.UpdatePartnerAsync(added.Id,
+            new SaveThirdPartyPartnerDto
+            {
+                Name = "Code Needed", PartnerType = "Broker", InternalCode = "  ", ConcurrencyToken = added.ConcurrencyToken
+            }, Actor));
+        Assert.Contains("Internal code is required", error.Message);
+    }
+
+    [Fact]
+    public async Task APartnerCanBeReadById_AndAMissingOneIsNotFound()
+    {
+        await using var harness = await Harness.Create();
+        var partner = await harness.Service.GetPartnerByIdAsync(harness.PartnerId);
+        Assert.Equal("ABC Broker", partner.Name);
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => harness.Service.GetPartnerByIdAsync(99_999));
+    }
+
+    /// <summary>Two partners added at once can be handed the same next code. The loser must take the next free one.</summary>
+    [Fact]
+    public async Task AMadeCodeThatLosesARace_IsRegeneratedInsteadOfFailing()
+    {
+        var database = Guid.NewGuid().ToString();
+        var rival = new CollideOnce(database);
+        await using var context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase(database).AddInterceptors(rival).Options);
+        var service = new CommissionRebateService(context, new FinanceAccountService(context), new MemoryEvidenceStorage());
+
+        var added = await service.CreatePartnerAsync(new SaveThirdPartyPartnerDto { Name = "Late Arrival", PartnerType = "Broker" }, Actor);
+
+        Assert.True(rival.Fired);
+        Assert.Equal("PTR-0002", added.InternalCode);
+        Assert.Equal(2, context.ThirdPartyPartners.Count());
+    }
+
+    [Fact]
+    public async Task ATypedCodeThatCollides_IsStillRefused_NotSilentlyChanged()
+    {
+        await using var harness = await Harness.Create();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.CreatePartnerAsync(
+            new SaveThirdPartyPartnerDto { Name = "Same Code", PartnerType = "Broker", InternalCode = "abc-1" }, Actor));
+        Assert.Contains("internal code already exists", error.Message);
+    }
+
+    /// <summary>Takes the code the service is about to use through another context, then reports the unique-index failure.</summary>
+    private sealed class CollideOnce(string database) : SaveChangesInterceptor
+    {
+        public bool Fired { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Fired) return result;
+            Fired = true;
+            await using var other = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(database).Options);
+            other.ThirdPartyPartners.Add(new ThirdPartyPartner { Name = "Won The Race", PartnerType = "Broker", InternalCode = "PTR-0001", IsActive = true });
+            await other.SaveChangesAsync(cancellationToken);
+            throw new DbUpdateException("Cannot insert duplicate key row in object 'ThirdPartyPartners'.");
+        }
+    }
+
+    [Fact]
+    public async Task CommissionsAndRebates_CountTheRowsMatchingTheStatus_OnTheFirstPageOrWhenAsked()
+    {
+        await using var harness = await Harness.Create();
+        await harness.Service.CreateCommissionAsync(harness.BookingId, Direct(harness.PartnerId, fixedAmount: 500m), Actor);
+        await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount, CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 1_000m, Reason = "Customer retention", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+
+        var pendingCommissions = await harness.Service.GetCommissionsAsync(BookingCommissionStatus.Pending, null, null, 0, 20);
+        var paidCommissions = await harness.Service.GetCommissionsAsync(BookingCommissionStatus.Paid, null, null, 0, 20);
+        var laterPage = await harness.Service.GetCommissionsAsync(BookingCommissionStatus.Pending, null, null, 1, 20);
+        var askedLater = await harness.Service.GetCommissionsAsync(BookingCommissionStatus.Pending, null, null, 1, 20, includeTotal: true);
+        Assert.Equal(1, pendingCommissions.TotalCount);
+        Assert.Equal(0, paidCommissions.TotalCount);
+        Assert.Null(laterPage.TotalCount);
+        Assert.Equal(1, askedLater.TotalCount);
+
+        var pendingRebates = await harness.Service.GetRebatesAsync(CustomerRebateStatus.Pending, null, 0, 20);
+        var appliedRebates = await harness.Service.GetRebatesAsync(CustomerRebateStatus.Applied, null, 0, 20);
+        var rebatesLater = await harness.Service.GetRebatesAsync(CustomerRebateStatus.Pending, null, 1, 20);
+        var rebatesAskedLater = await harness.Service.GetRebatesAsync(CustomerRebateStatus.Pending, null, 1, 20, includeTotal: true);
+        Assert.Equal(1, pendingRebates.TotalCount);
+        Assert.Equal(0, appliedRebates.TotalCount);
+        Assert.Null(rebatesLater.TotalCount);
+        Assert.Equal(1, rebatesAskedLater.TotalCount);
     }
 
     [Fact]

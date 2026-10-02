@@ -52,7 +52,9 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public string? Cnic { get; set; }
         public string? Ntn { get; set; }
         public string? RegistrationNumber { get; set; }
-        public string InternalCode { get; set; } = string.Empty;
+        /// <summary>Optional when adding (the service makes the next PTR-0001 style code); required when updating.
+        /// Nullable so a request without it reaches the service instead of being refused at model binding.</summary>
+        public string? InternalCode { get; set; }
         public string? BankName { get; set; }
         public string? AccountTitle { get; set; }
         public string? AccountNumber { get; set; }

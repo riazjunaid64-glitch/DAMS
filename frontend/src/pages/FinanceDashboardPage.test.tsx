@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ToastProvider } from "../components/ui/Toast.tsx";
 import { ProjectsContext } from "../contexts/projectsContextValue.ts";
 import type { User } from "../App.tsx";
@@ -386,6 +386,35 @@ describe("Finance home", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     expect(await screen.findByText("Deleted")).toBeTruthy();
     expect(calls.some((call) => call.startsWith("DELETE /api/Finance/revenue/9"))).toBe(true);
+  });
+
+  it.each([
+    ["commission", "Commission BK-000013", "/finance/commissions-rebates?tab=commissions"],
+    ["rebate", "Rebate BK-000012", "/finance/commissions-rebates?tab=rebates"],
+    ["customerCredit", "Customer credit BK-000009", "/finance/commissions-rebates?tab=rebates"],
+  ])("opens a %s cost row on its Commissions & Rebates tab", async (source, label, target) => {
+    rows = [{ date: "2026-09-29", projectName: "Deen Square", label, kind: "cost", amount: 1000, expenseId: null, source, sourceId: 1, attachment: null }];
+    function Probe() {
+      const location = useLocation();
+      return <p data-testid="where">{location.pathname}{location.search}</p>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/finance"]}>
+        <ProjectsContext.Provider value={{ projects: [], loading: false, error: null, reload: async () => {} }}>
+          <ToastProvider>
+            <Routes>
+              <Route path="/finance" element={<FinanceDashboardPage user={{ userId: "1", role: "Admin", email: "a@b.c" }} />} />
+              <Route path="/finance/commissions-rebates" element={<Probe />} />
+            </Routes>
+          </ToastProvider>
+        </ProjectsContext.Provider>
+      </MemoryRouter>,
+    );
+    await screen.findByRole("heading", { name: "Revenue" });
+    fireEvent.click(await screen.findByRole("button", { name: /Total expenses/ }));
+    await screen.findByRole("heading", { name: "Total expenses" });
+    fireEvent.click((await screen.findAllByLabelText(label))[0]!);
+    expect((await screen.findByTestId("where")).textContent).toBe(target);
   });
 
   it("opens the phone more sheet with the finance links", async () => {

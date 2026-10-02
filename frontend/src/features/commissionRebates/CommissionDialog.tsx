@@ -43,7 +43,7 @@ function initial(existing: Commission | null): CommissionFormState {
 
 /**
  * Add commission and Edit commission: one popup. A commission is always saved as set by hand with the
- * chosen type and basis; the automatic rules of the Finance page are not used here. Editing keeps the
+ * chosen type and basis; automatic rules are not used here. Editing keeps the
  * partner fixed and never goes below what is already paid.
  */
 export function CommissionDialog({ bookingId, workspace, existing, partners, takenPartnerIds, run, onPartnerCreated, onClose }: Props) {
@@ -165,7 +165,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
           </div>
 
           {ruleDriven ? (
-            <Notice tone="gold" title={`This commission follows the rule “${existing.ruleNameSnapshot ?? "set on the Finance page"}”.`} message={existing.payouts.length > 0 ? "Its amount is worked out by the rule, and the partner is locked because a payment has been made. There is nothing to change here." : "Its amount is worked out by the rule; only the partner can change here. A different partner is worked out from their own rule."} />
+            <Notice tone="gold" title={`This commission follows the rule “${existing.ruleNameSnapshot ?? "set earlier"}”.`} message={existing.payouts.length > 0 ? "Its amount is worked out by the rule, and the partner is locked because a payment has been made. There is nothing to change here." : "Its amount is worked out by the rule; only the partner can change here. A different partner is worked out from their own rule."} />
           ) : (
             <>
               <ChoiceChips variant="segmented" label="Type" required options={TYPES} value={form.calculationType} onChange={(calculationType) => set({ calculationType: calculationType as CommissionFormState["calculationType"] })} />
@@ -187,7 +187,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
             </>
           )}
 
-          {previewFailed && <Notice tone="red" role="alert" title={worked} message="Pick another partner, or add a rule for this one on the Finance page." />}
+          {previewFailed && <Notice tone="red" role="alert" title={worked} message="Pick another partner." />}
 
           <SummaryStrip
             label="Commission"

@@ -10,7 +10,8 @@ namespace DAMS.Application.Services
     public sealed partial class CommissionRebateService
     {
         public async Task<PagedResult<BookingCommissionDto>> GetCommissionsAsync(BookingCommissionStatus? status,
-            int? partnerId, int? projectId, int skip, int take, CancellationToken cancellationToken = default)
+            int? partnerId, int? projectId, int skip, int take, bool includeTotal = false,
+            CancellationToken cancellationToken = default)
         {
             skip = Math.Max(0, skip);
             take = Math.Clamp(take, 1, 100);
@@ -24,12 +25,23 @@ namespace DAMS.Application.Services
             if (status.HasValue) query = query.Where(c => c.Status == status.Value);
             if (partnerId.HasValue) query = query.Where(c => c.PartnerId == partnerId.Value);
             if (projectId.HasValue) query = query.Where(c => c.Booking.Unit.ProjectId == projectId.Value);
+            // Counted on a plain query with the same filters, not on the one carrying the Include chains.
+            int? total = null;
+            if (PagedResult<BookingCommissionDto>.IncludeTotal(skip, includeTotal))
+            {
+                var counted = _context.BookingCommissions.AsNoTracking().AsQueryable();
+                if (status.HasValue) counted = counted.Where(c => c.Status == status.Value);
+                if (partnerId.HasValue) counted = counted.Where(c => c.PartnerId == partnerId.Value);
+                if (projectId.HasValue) counted = counted.Where(c => c.Booking.Unit.ProjectId == projectId.Value);
+                total = await counted.CountAsync(cancellationToken);
+            }
             var rows = await query.OrderByDescending(c => c.CreatedAt).ThenByDescending(c => c.Id)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
             return new PagedResult<BookingCommissionDto>
             {
                 Items = rows.Take(take).Select(c => MapCommission(c)).ToList(),
-                HasMore = rows.Count > take
+                HasMore = rows.Count > take,
+                TotalCount = total
             };
         }
 

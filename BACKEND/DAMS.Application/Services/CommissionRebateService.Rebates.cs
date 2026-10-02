@@ -10,7 +10,7 @@ namespace DAMS.Application.Services
     public sealed partial class CommissionRebateService
     {
         public async Task<PagedResult<CustomerRebateDto>> GetRebatesAsync(CustomerRebateStatus? status, int? projectId,
-            int skip, int take, CancellationToken cancellationToken = default)
+            int skip, int take, bool includeTotal = false, CancellationToken cancellationToken = default)
         {
             skip = Math.Max(0, skip);
             take = Math.Clamp(take, 1, 100);
@@ -21,12 +21,22 @@ namespace DAMS.Application.Services
                 .Include(r => r.Evidence).AsSplitQuery().AsQueryable();
             if (status.HasValue) query = query.Where(r => r.Status == status.Value);
             if (projectId.HasValue) query = query.Where(r => r.Booking.Unit.ProjectId == projectId.Value);
+            // Counted on a plain query with the same filters, not on the one carrying the Include chains.
+            int? total = null;
+            if (PagedResult<CustomerRebateDto>.IncludeTotal(skip, includeTotal))
+            {
+                var counted = _context.CustomerRebates.AsNoTracking().AsQueryable();
+                if (status.HasValue) counted = counted.Where(r => r.Status == status.Value);
+                if (projectId.HasValue) counted = counted.Where(r => r.Booking.Unit.ProjectId == projectId.Value);
+                total = await counted.CountAsync(cancellationToken);
+            }
             var rows = await query.OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
             return new PagedResult<CustomerRebateDto>
             {
                 Items = rows.Take(take).Select(r => MapRebate(r)).ToList(),
-                HasMore = rows.Count > take
+                HasMore = rows.Count > take,
+                TotalCount = total
             };
         }
 

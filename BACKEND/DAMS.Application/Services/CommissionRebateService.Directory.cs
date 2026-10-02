@@ -18,8 +18,10 @@ namespace DAMS.Application.Services
             "External Sales Agent", "Other"
         };
 
+        private const int MaxGeneratedCodeAttempts = 5;
+
         public async Task<PagedResult<ThirdPartyPartnerDto>> GetPartnersAsync(string? search, bool? isActive,
-            int skip, int take,
+            int skip, int take, bool includeTotal = false,
             CancellationToken cancellationToken = default)
         {
             skip = Math.Max(0, skip);
@@ -30,16 +32,16 @@ namespace DAMS.Application.Services
             {
                 var term = search.Trim();
                 query = query.Where(p => p.Name.Contains(term) || p.InternalCode.Contains(term)
+                    || (p.ContactPerson != null && p.ContactPerson.Contains(term))
                     || (p.Phone != null && p.Phone.Contains(term)) || (p.Email != null && p.Email.Contains(term))
                     || (p.Cnic != null && p.Cnic.Contains(term)) || (p.Ntn != null && p.Ntn.Contains(term)));
             }
+            int? total = PagedResult<ThirdPartyPartnerDto>.IncludeTotal(skip, includeTotal)
+                ? await query.CountAsync(cancellationToken)
+                : null;
             var rows = await ProjectPartners(query.OrderByDescending(p => p.IsActive).ThenBy(p => p.Name).ThenBy(p => p.Id))
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
-            return new PagedResult<ThirdPartyPartnerDto>
-            {
-                Items = rows.Take(take).ToList(),
-                HasMore = rows.Count > take
-            };
+            return PagedResult<ThirdPartyPartnerDto>.Page(rows, take, total);
         }
 
         public async Task<ThirdPartyPartnerDto> CreatePartnerAsync(SaveThirdPartyPartnerDto dto,
@@ -48,18 +50,38 @@ namespace DAMS.Application.Services
             // The booking screen adds a partner from a name and type alone, so the directory code is
             // generated when the caller does not supply one. Update still requires it: an existing
             // partner already has a code, and regenerating it would orphan what refers to it.
-            if (string.IsNullOrWhiteSpace(dto.InternalCode))
-                dto.InternalCode = await NextPartnerCodeAsync(cancellationToken);
-            ValidatePartner(dto);
-            await EnsurePartnerUniqueAsync(dto, null, cancellationToken);
-            var partner = new ThirdPartyPartner { CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName, CreatedAt = DateTime.UtcNow };
-            AssignPartner(partner, dto);
-            _context.ThirdPartyPartners.Add(partner);
-            var audit = Audit(FinancialWorkflowAction.PartnerCreated, actor);
-            audit.Partner = partner;
-            await _context.SaveChangesAsync(cancellationToken);
-            return await GetPartnerAsync(partner.Id, cancellationToken);
+            var generated = string.IsNullOrWhiteSpace(dto.InternalCode);
+            for (var attempt = 1; ; attempt++)
+            {
+                if (generated) dto.InternalCode = await NextPartnerCodeAsync(cancellationToken);
+                ValidatePartner(dto);
+                await EnsurePartnerUniqueAsync(dto, null, cancellationToken);
+                var partner = new ThirdPartyPartner { CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName, CreatedAt = DateTime.UtcNow };
+                AssignPartner(partner, dto);
+                _context.ThirdPartyPartners.Add(partner);
+                var audit = Audit(FinancialWorkflowAction.PartnerCreated, actor);
+                audit.Partner = partner;
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                    return await GetPartnerByIdAsync(partner.Id, cancellationToken);
+                }
+                catch (DbUpdateException) when (generated && attempt < MaxGeneratedCodeAttempts)
+                {
+                    // Two partners added at once can be handed the same next code; the unique index lets
+                    // one win. The loser takes the next free code instead of failing with a generic conflict.
+                    _context.Entry(audit).State = EntityState.Detached;
+                    _context.Entry(partner).State = EntityState.Detached;
+                    var code = partner.InternalCode;
+                    if (!await _context.ThirdPartyPartners.AsNoTracking().AnyAsync(p => p.InternalCode == code, cancellationToken))
+                        throw;
+                }
+            }
         }
+
+        public async Task<ThirdPartyPartnerDto> GetPartnerByIdAsync(int id, CancellationToken cancellationToken = default) =>
+            await ProjectPartners(_context.ThirdPartyPartners.AsNoTracking().Where(p => p.Id == id))
+                .SingleOrDefaultAsync(cancellationToken) ?? throw new KeyNotFoundException("Partner not found.");
 
         public async Task<ThirdPartyPartnerDto> UpdatePartnerAsync(int id, SaveThirdPartyPartnerDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
@@ -73,7 +95,7 @@ namespace DAMS.Application.Services
             partner.UpdatedAt = DateTime.UtcNow;
             Audit(FinancialWorkflowAction.PartnerUpdated, actor, partnerId: id);
             await _context.SaveChangesAsync(cancellationToken);
-            return await GetPartnerAsync(id, cancellationToken);
+            return await GetPartnerByIdAsync(id, cancellationToken);
         }
 
         public async Task<ThirdPartyPartnerDto> SetPartnerStatusAsync(int id, SetPartnerStatusDto dto,
@@ -89,7 +111,7 @@ namespace DAMS.Application.Services
             Audit(dto.IsActive ? FinancialWorkflowAction.PartnerActivated : FinancialWorkflowAction.PartnerDeactivated,
                 actor, partnerId: id, reason: dto.Reason);
             await _context.SaveChangesAsync(cancellationToken);
-            return await GetPartnerAsync(id, cancellationToken);
+            return await GetPartnerByIdAsync(id, cancellationToken);
         }
 
         public Task<ThirdPartyAttributionDto> SaveAttributionAsync(int? id, SaveThirdPartyAttributionDto dto,
@@ -260,10 +282,6 @@ namespace DAMS.Application.Services
                 ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
             }).SingleAsync(cancellationToken);
 
-        private async Task<ThirdPartyPartnerDto> GetPartnerAsync(int id, CancellationToken cancellationToken) =>
-            await ProjectPartners(_context.ThirdPartyPartners.AsNoTracking().Where(p => p.Id == id))
-                .SingleAsync(cancellationToken);
-
         private static IQueryable<ThirdPartyPartnerDto> ProjectPartners(IQueryable<ThirdPartyPartner> query) =>
             query.Select(p => new ThirdPartyPartnerDto
             {
@@ -278,8 +296,8 @@ namespace DAMS.Application.Services
         private const string PartnerCodePrefix = "PTR-";
 
         // Sequential rather than random so the code stays a readable directory reference. A concurrent
-        // create that lands on the same number is caught by the unique check in EnsurePartnerUniqueAsync
-        // and surfaces as a retryable message rather than a duplicate row.
+        // create that lands on the same number loses to the unique index on the code, and CreatePartnerAsync
+        // then takes the next free code instead of failing.
         private async Task<string> NextPartnerCodeAsync(CancellationToken cancellationToken)
         {
             var codes = await _context.ThirdPartyPartners.AsNoTracking()

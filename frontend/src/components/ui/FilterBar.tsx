@@ -72,7 +72,7 @@ export type FilterDef = FilterBase & (
 export type FilterValues = Record<string, string>;
 
 export type FilterBarProps = {
-  search?: { value: string; onSearch: (value: string) => void; placeholder?: string };
+  search?: { value: string; onSearch: (value: string) => void; placeholder?: string; /** How long after typing stops the search runs (SearchBar's own default when omitted). */ debounceMs?: number };
   filters: readonly FilterDef[];
   /** Current value of each filter; "" means All / not set. */
   values: FilterValues;

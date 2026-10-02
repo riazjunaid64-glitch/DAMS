@@ -109,7 +109,7 @@ export function PayCommissionDialog({ bookingId, commission, financeAccounts, ac
             role="alert"
             title={error}
             action={isMissingBankDetails(error)
-              ? <Link to="/finance/commissions-rebates" className="text-sm font-bold text-gold-text underline-offset-4 hover:underline">Open the partner page</Link>
+              ? <Link to={`/finance/commissions-rebates?tab=partners&partner=${commission.partnerId}`} className="text-sm font-bold text-gold-text underline-offset-4 hover:underline">Open the partner page</Link>
               : undefined}
           />
         )}

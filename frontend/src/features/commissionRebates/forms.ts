@@ -6,6 +6,9 @@ import type { CommissionFormState, RebateFormState } from "./state.ts";
 import type { BookingWorkspace, CalculationBasis, Commission, MoneyMovement, Rebate, RebateMethod } from "./types.ts";
 
 /** The partner types the directory accepts (CommissionRebateService.Directory), as the server spells them. */
+/** A plain "name@domain.tld" check. The server does not look at the shape of an email, so the forms do. */
+export const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+
 export const PARTNER_TYPES = ["Agency", "Broker", "Dealer", "Referral Partner", "Introducer", "Marketing Partner", "External Sales Agent", "Other"]
   .map((value) => ({ value, label: value.charAt(0) + value.slice(1).toLowerCase() }));
 
