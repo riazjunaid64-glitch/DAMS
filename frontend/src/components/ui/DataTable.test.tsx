@@ -49,4 +49,22 @@ describe("DataTable", () => {
     expect(screen.getAllByText("Petty cash").length).toBeGreaterThan(0);
     expect(screen.getByRole("progressbar", { name: "Loading" })).toBeTruthy();
   });
+  it("caps the height inside the card and keeps the heading on top when asked", () => {
+    const { rerender } = render(<DataTable columns={columns} rows={rows} rowKey={(row) => row.id} maxHeight="46vh" />);
+    const scroller = document.querySelector("table")!.parentElement!;
+    expect(scroller.style.maxHeight).toBe("46vh");
+    expect(document.querySelector("thead")!.className).toContain("sticky");
+    rerender(<DataTable columns={columns} rows={rows} rowKey={(row) => row.id} />);
+    expect(document.querySelector("table")!.parentElement!.style.maxHeight).toBe("");
+  });
+
+  it("uses tighter cell padding when asked", () => {
+    const { rerender } = render(<DataTable columns={columns} rows={rows} rowKey={(row) => row.id} />);
+    expect(document.querySelector("tbody td")!.className).toContain("px-4");
+    expect(document.querySelector("thead th")!.className).toContain("px-4");
+    rerender(<DataTable columns={columns} rows={rows} rowKey={(row) => row.id} dense />);
+    expect(document.querySelector("tbody td")!.className).toContain("px-3");
+    expect(document.querySelector("tbody td")!.className).not.toContain("px-4");
+    expect(document.querySelector("thead th")!.className).toContain("px-3");
+  });
 });

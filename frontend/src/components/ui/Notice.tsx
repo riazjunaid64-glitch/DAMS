@@ -34,7 +34,7 @@ export function Notice({ tone, title, message, children, icon, action, role, cla
         {icon && (
           <span className={cx("flex size-9 shrink-0 items-center justify-center rounded-field bg-card", colours.icon)}>{icon}</span>
         )}
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="m-0 text-sm font-extrabold text-ink">{title}</p>
           {message && <p className="m-0 mt-0.5 text-small text-ink-2">{message}</p>}
           {children && <div className="mt-0.5 text-small text-ink-2">{children}</div>}

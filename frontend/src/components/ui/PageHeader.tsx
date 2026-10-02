@@ -40,7 +40,7 @@ export function PageHeader({ title, status, badge, subtitle, details, back, acti
         {details && <div className="mt-2 flex flex-col items-start gap-1.5 text-body md:flex-row md:flex-wrap md:items-center md:gap-x-5">{details}</div>}
         {subtitle && <p className="m-0 mt-1 text-small text-ink-muted md:text-body">{subtitle}</p>}
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="flex flex-wrap items-center gap-2 max-md:shrink-0">{actions}</div>}
     </header>
   );
 }
