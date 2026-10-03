@@ -30,7 +30,8 @@ namespace DAMS.Domain.Entities
         public int RecordId { get; set; }
 
         /// <summary><c>Updated</c> or <c>Deleted</c>. Creations are not recorded here — the record
-        /// itself already carries who created it and when.</summary>
+        /// itself already carries who created it and when — except a new account with an opening
+        /// balance, which is <c>Created</c> with its 0 → figure.</summary>
         public string Action { get; set; } = string.Empty;
 
         /// <summary>JSON. For an update, the fields that moved with their before and after values;

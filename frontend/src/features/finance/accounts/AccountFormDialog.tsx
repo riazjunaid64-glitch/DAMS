@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent } from "react";
-import { ConfirmDialog, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
+import { Button, ConfirmDialog, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
 import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { accountsApi } from "./api.ts";
 import { TYPE_OPTIONS, openingChangeMessage, parseOpening, takesNoTypedOpening, typeValue, type Account } from "./accountGroups.ts";
@@ -115,16 +115,30 @@ export function AccountFormDialog({ account, goLiveDate, onClose, onSaved }: Pro
             <TextField label="Account holder" required maxLength={150} disabled={saving} value={fields.holder} onChange={(event) => set({ holder: event.target.value })} />
           </div>
           <div className={pair}>
-            <NumberField
-              label="Opening balance"
-              prefix="Rs"
-              decimals={2}
-              allowNegative
-              disabled={saving || openingLocked}
-              helper={openingLocked ? "Worked out from bookings, not typed." : undefined}
-              value={fields.opening}
-              onChange={(opening) => set({ opening })}
-            />
+            <div className="flex min-w-0 flex-col gap-1">
+              <NumberField
+                label="Opening balance"
+                prefix="Rs"
+                decimals={2}
+                allowNegative
+                disabled={saving || openingLocked}
+                helper={openingLocked ? "Worked out from bookings, not typed." : undefined}
+                value={fields.opening}
+                onChange={(opening) => set({ opening })}
+              />
+              {/* A figure typed before this rule stays as it is, but it can be taken back to 0. */}
+              {openingLocked && saved !== 0 && (
+                <Button
+                  type="button"
+                  variant="link"
+                  className="self-start"
+                  disabled={saving}
+                  onClick={() => set({ opening: opening === 0 ? String(saved) : "0" })}
+                >
+                  {opening === 0 ? "Keep opening balance" : "Clear opening balance"}
+                </Button>
+              )}
+            </div>
             <TextField label={optional("Ledger code")} maxLength={30} disabled={saving || system} value={fields.ledgerCode} onChange={(event) => set({ ledgerCode: event.target.value })} />
           </div>
           <TextField label={optional("Bank or wallet name")} maxLength={150} disabled={saving} value={fields.bankName} onChange={(event) => set({ bankName: event.target.value })} />

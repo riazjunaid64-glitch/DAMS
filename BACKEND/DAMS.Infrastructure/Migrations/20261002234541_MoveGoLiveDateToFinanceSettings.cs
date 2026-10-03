@@ -29,7 +29,7 @@ namespace DAMS.Infrastructure.Migrations
             // The old workflow's history moves into the shared correction trail before its tables go.
             migrationBuilder.Sql("""
                 INSERT INTO [FinanceRecordAudits] ([RecordType],[RecordId],[Action],[Changes],[ActorUserId],[OccurredAt])
-                SELECT 'OpeningBalanceSet', a.[OpeningBalanceSetId], a.[Action],
+                SELECT 'OpeningBalanceSet', a.[OpeningBalanceSetId], LEFT(a.[Action], 20),
                     ISNULL((SELECT a.[Note] AS [note] FOR JSON PATH, WITHOUT_ARRAY_WRAPPER), '{}'),
                     a.[UserId], a.[OccurredAt]
                 FROM [OpeningBalanceAuditEntries] a;

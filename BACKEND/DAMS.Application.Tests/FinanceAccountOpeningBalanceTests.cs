@@ -42,13 +42,31 @@ public sealed class FinanceAccountOpeningBalanceTests
         var updated = await service.UpdateAsync(created.Id, body);
 
         Assert.Equal(12_500_000m, updated.OpeningBalance);
-        var row = Assert.Single(await Trail(context, created.Id));
+        // The creation left its own 0 -> 12,000,000 row; the change is the second.
+        var row = Assert.Single((await Trail(context, created.Id)).Where(a => a.Action == "Updated"));
         Assert.Equal(9, row.ActorUserId);
-        Assert.Equal("Updated", row.Action);
         Assert.Contains("OpeningBalance", row.Changes);
         Assert.Contains("12000000.00", row.Changes);
         Assert.Contains("12500000.00", row.Changes);
         Assert.DoesNotContain("UpdatedAt", row.Changes);
+    }
+
+    [Fact]
+    public async Task ANewAccountWithAnOpening_LeavesAHistoryRowFromZero_AndOneWithoutAnOpeningLeavesNone()
+    {
+        await using var context = Context();
+        context.ActorUserId = 9;
+        var service = new FinanceAccountService(context);
+
+        var created = await service.CreateAsync(Form("Meezan Bank", FinanceAccountType.Bank, 12_000_000m));
+        var spare = await service.CreateAsync(Form("Spare", FinanceAccountType.Cash, 0m));
+
+        var row = Assert.Single(await Trail(context, created.Id));
+        Assert.Equal("Created", row.Action);
+        Assert.Equal(9, row.ActorUserId);
+        Assert.Contains("\"from\":\"0.00\"", row.Changes);
+        Assert.Contains("\"to\":\"12000000.00\"", row.Changes);
+        Assert.Empty(await Trail(context, spare.Id));
     }
 
     [Fact]
@@ -60,7 +78,7 @@ public sealed class FinanceAccountOpeningBalanceTests
 
         await service.UpdateAsync(created.Id, Update(created, 500m));
 
-        Assert.Empty(await Trail(context, created.Id));
+        Assert.DoesNotContain(await Trail(context, created.Id), a => a.Action == "Updated");
     }
 
     [Theory]

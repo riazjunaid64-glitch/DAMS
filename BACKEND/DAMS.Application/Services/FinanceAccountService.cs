@@ -728,7 +728,40 @@ namespace DAMS.Application.Services
                 IsActive = true, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
             };
             _context.FinanceAccounts.Add(account);
-            await _context.SaveChangesAsync(cancellationToken);
+            if (account.OpeningBalance == 0m)
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+                return await GetByIdAsync(account.Id, cancellationToken);
+            }
+
+            // A non-zero opening on a new account moves every report from the go-live date, so its
+            // 0 -> figure leaves the same history row an edit would. The id only exists after the
+            // insert, so both writes share one transaction and neither can be left without the other.
+            await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                await using var transaction = _context.Database.IsRelational() && _context.Database.CurrentTransaction == null
+                    ? await _context.Database.BeginTransactionAsync(cancellationToken)
+                    : null;
+                await _context.SaveChangesAsync(cancellationToken);
+                _context.FinanceRecordAudits.Add(new FinanceRecordAudit
+                {
+                    RecordType = nameof(FinanceAccount),
+                    RecordId = account.Id,
+                    Action = "Created",
+                    Changes = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+                    {
+                        [nameof(FinanceAccount.OpeningBalance)] = new Dictionary<string, object?>
+                        {
+                            ["from"] = "0.00",
+                            ["to"] = account.OpeningBalance.ToString("0.00###", System.Globalization.CultureInfo.InvariantCulture)
+                        }
+                    }),
+                    ActorUserId = _context.ActorUserId,
+                    OccurredAt = DateTime.UtcNow
+                });
+                await _context.SaveChangesAsync(cancellationToken);
+                if (transaction != null) await transaction.CommitAsync(cancellationToken);
+            });
             return await GetByIdAsync(account.Id, cancellationToken);
         }
 

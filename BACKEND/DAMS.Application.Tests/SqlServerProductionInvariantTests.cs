@@ -5495,6 +5495,67 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// The one-way KAN-91 migration, run from the exact schema and data an upgrade starts from. It drops
+    /// three tables, so what it keeps has to be proven on SQL Server rather than trusted: the go-live
+    /// date, the copied history rows, and every account's opening balance. One database per state of
+    /// the old singleton set — committed, reopened (committed once, then unlocked) and never committed.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheGoLiveMigration_KeepsDateHistoryAndBalances_ForCommittedReopenedAndUncommittedSets()
+    {
+        const string before = "20261001145447_DocumentSetupAskEveryCustomer";
+        var cases = new[]
+        {
+            (Name: "committed", IsCommitted: 1, CommittedAt: "'2026-08-02T06:00:00'", Expected: (DateTime?)new DateTime(2026, 8, 1)),
+            (Name: "reopened", IsCommitted: 0, CommittedAt: "'2026-08-02T06:00:00'", Expected: (DateTime?)new DateTime(2026, 8, 1)),
+            (Name: "uncommitted", IsCommitted: 0, CommittedAt: "NULL", Expected: (DateTime?)null),
+        };
+
+        foreach (var scenario in cases)
+        {
+            await using var database = await SqlTestDatabase.CreateAsync();
+            var options = Options(database.ConnectionString);
+            await using (var db = new AppDbContext(options))
+                await db.GetService<IMigrator>().MigrateAsync(before);
+
+            await ExecuteAsync(database.ConnectionString, $"""
+                INSERT INTO [FinanceAccounts] ([Name], [Type], [AccountHolderName], [OpeningBalance], [IsActive], [CreatedAt], [UpdatedAt])
+                VALUES (N'Upgrade Bank', 2, N'DAMS', 1000000, 1, SYSUTCDATETIME(), SYSUTCDATETIME()),
+                       (N'Upgrade Capital', 6, N'Partner', 1000000, 1, SYSUTCDATETIME(), SYSUTCDATETIME()),
+                       (N'Upgrade Spare', 1, N'DAMS', 0, 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+                INSERT INTO [OpeningBalanceSets] ([AsAtDate], [IsCommitted], [CommittedAt], [CommittedByUserId])
+                VALUES ('2026-08-01', {scenario.IsCommitted}, {scenario.CommittedAt}, 7);
+                DECLARE @Set int = CONVERT(int, SCOPE_IDENTITY());
+                INSERT INTO [OpeningBalanceEntries] ([OpeningBalanceSetId], [FinanceAccountId], [DebitAmount], [CreditAmount], [Note])
+                SELECT @Set, a.[Id],
+                       CASE WHEN a.[Name] = N'Upgrade Bank' THEN 1000000 ELSE 0 END,
+                       CASE WHEN a.[Name] = N'Upgrade Capital' THEN 1000000 ELSE 0 END,
+                       CASE WHEN a.[Name] = N'Upgrade Bank' THEN N'Per the 31 Jul trial balance' END
+                FROM [FinanceAccounts] a;
+                INSERT INTO [OpeningBalanceAuditEntries] ([OpeningBalanceSetId], [Action], [UserId], [OccurredAt], [Note])
+                VALUES (@Set, N'Committed', 7, '2026-08-02T06:00:00', N'Cutover'),
+                       (@Set, N'Reopened', 7, '2026-08-05T06:00:00', N'Accountant correction');
+                """);
+            var balancesBefore = await ScalarAsync<decimal>(database.ConnectionString, "SELECT SUM([OpeningBalance]) FROM [FinanceAccounts]");
+
+            await using (var db = new AppDbContext(options))
+                await db.Database.MigrateAsync();
+
+            await using var check = new AppDbContext(options);
+            Assert.Equal(scenario.Expected, await FinanceDateRules.BaselineAsync(check, default));
+            Assert.Equal(balancesBefore, await ScalarAsync<decimal>(database.ConnectionString, "SELECT SUM([OpeningBalance]) FROM [FinanceAccounts]"));
+            Assert.Equal(0, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM sys.tables WHERE [name] LIKE 'OpeningBalance%'"));
+
+            // Both audit lines survive with their note and action; only the entries that carried a note
+            // or an amount become per-account history (the zero, noteless one does not).
+            Assert.Equal(2, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'OpeningBalanceSet'"));
+            Assert.Equal(1, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'OpeningBalanceSet' AND [Action] = 'Reopened' AND [Changes] LIKE '%Accountant correction%' AND [ActorUserId] = 7"));
+            Assert.Equal(2, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'FinanceAccount' AND [Action] = 'OpeningNote'"));
+            Assert.Equal(1, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [Action] = 'OpeningNote' AND [Changes] LIKE '%Per the 31 Jul trial balance%'"));
+        }
+    }
+
+    /// <summary>
     /// Every write that opens its own transaction, against a database configured the way production
     /// is.
     /// <para>
@@ -5813,7 +5874,8 @@ public sealed class SqlServerProductionInvariantTests
 
         Assert.Equal(2, eightProjects.Commands);       // base account page + grouped movements
         Assert.Equal(2, sixteenProjects.Commands);     // volume must not add database commands
-        Assert.Equal(2, overview.Commands);
+        // The overview adds one fixed singleton read, the go-live date, to the same two; volume adds none.
+        Assert.Equal(3, overview.Commands);   // accounts + grouped movements + go-live setting
 
         var bank = Assert.Single(sixteenProjects.Result.Items, a => a.Name == "Bank 1");
         Assert.Equal(0m, bank.RevenueReceived);

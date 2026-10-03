@@ -772,6 +772,40 @@ describe("Manage accounts: Edit account", () => {
     expect(screen.queryByText("Change the opening balance?")).toBeNull();
   });
 
+  it.each([["CustomerDeposits"], ["CustomerReceivables"], ["CommissionPayable"], [3], [4], [5]])(
+    "lets a legacy figure on a locked account (role %s) be cleared to 0, after the confirm, and taken back before saving",
+    async (role) => {
+      read.mockImplementation((async (_filters: unknown, includeOverview: boolean) => ({
+        items: [account({ id: 12, name: "Locked", type: 5, systemRole: role, isSystemAccount: true, openingBalance: 750, ledgerCode: "2103", concurrencyToken: "tok-12" })],
+        hasMore: false, overview: includeOverview ? overview() : undefined,
+      })) as never);
+      show();
+      await screen.findAllByText("Locked");
+      fireEvent.click(button("Edit Locked"));
+      await screen.findByRole("dialog");
+      expect(field(/Opening balance/).disabled).toBe(true);
+      expect(field(/Opening balance/).value).toBe("750");
+
+      fireEvent.click(button("Clear opening balance", dialog()));
+      expect(field(/Opening balance/).value).toBe("0");
+      expect(field(/Opening balance/).disabled).toBe(true);
+      fireEvent.click(button("Keep opening balance", dialog()));
+      expect(field(/Opening balance/).value).toBe("750");
+
+      fireEvent.click(button("Clear opening balance", dialog()));
+      fireEvent.click(footerButton("Save"));
+      expect(await screen.findByText("Every report from the go-live date, Aug 15, 2026, will change. Locked: Rs 750 → Rs 0.")).toBeTruthy();
+      fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+      await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+      expect(lastBody()).toMatchObject({ openingBalance: 0, concurrencyToken: "tok-12" });
+    },
+  );
+
+  it("offers no clearing on a locked account that is already at 0", async () => {
+    await edit("Customer deposits");
+    expect(dialog().queryByRole("button", { name: /opening balance/i })).toBeNull();
+  });
+
   it("leaves the opening of customer refunds payable and of tax payable editable", async () => {
     await edit("Tax payable (FBR)");
     expect(field(/Opening balance/).disabled).toBe(false);
