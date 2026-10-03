@@ -43,6 +43,9 @@ namespace DAMS.Application.DTOs.WhtDtos
         public int FinancialYearStartMonth { get; set; }
         public DateTime? WhtRatesConfirmedAt { get; set; }
         public string? WhtRatesConfirmedByName { get; set; }
+
+        /// <summary>The first day DAMS records movements for; null until it is set.</summary>
+        public DateTime? GoLiveDate { get; set; }
         public string CurrentFinancialYear { get; set; } = string.Empty;
         public string ConcurrencyToken { get; set; } = string.Empty;
     }
@@ -55,6 +58,9 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// Finance Act. Clearing it puts the unverified banner back.</summary>
         public bool MarkRatesConfirmed { get; set; }
         public bool ClearRatesConfirmation { get; set; }
+
+        /// <summary>The go-live date. Null leaves the saved date as it is; a saved date cannot be cleared.</summary>
+        public DateTime? GoLiveDate { get; set; }
         public string? ConcurrencyToken { get; set; }
     }
 
@@ -69,8 +75,8 @@ namespace DAMS.Application.DTOs.WhtDtos
         public decimal OutstandingPayable { get; set; }
 
         /// <summary>
-        /// The Tax Payable liability brought over from the client's previous system on the committed
-        /// opening-balance sheet. Part of <see cref="OutstandingPayable"/>, and shown separately so a
+        /// The Tax Payable liability brought over from the client's previous system, typed as the
+        /// opening balance of the Tax Payable account. Part of <see cref="OutstandingPayable"/>, and shown separately so a
         /// figure that is owed to FBR but was never withheld inside DAMS can be explained rather than
         /// looking like an error.
         /// </summary>

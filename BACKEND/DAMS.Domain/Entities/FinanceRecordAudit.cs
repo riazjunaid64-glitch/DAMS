@@ -22,14 +22,16 @@ namespace DAMS.Domain.Entities
         public int Id { get; set; }
 
         /// <summary>Entity name — <c>Expense</c>, <c>ManualRevenue</c>, <c>AssetPurchase</c>,
-        /// <c>WhtDeposit</c>. Not a foreign key: the row it describes may no longer exist, which is
+        /// <c>WhtDeposit</c>, <c>FinanceAccount</c> (its opening balance) or <c>FinanceSetting</c>
+        /// (the go-live date). Not a foreign key: the row it describes may no longer exist, which is
         /// exactly the case the trail is for.</summary>
         public string RecordType { get; set; } = string.Empty;
 
         public int RecordId { get; set; }
 
         /// <summary><c>Updated</c> or <c>Deleted</c>. Creations are not recorded here — the record
-        /// itself already carries who created it and when.</summary>
+        /// itself already carries who created it and when — except a new account with an opening
+        /// balance, which is <c>Created</c> with its 0 → figure.</summary>
         public string Action { get; set; } = string.Empty;
 
         /// <summary>JSON. For an update, the fields that moved with their before and after values;

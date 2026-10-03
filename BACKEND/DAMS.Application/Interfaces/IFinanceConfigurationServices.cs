@@ -11,15 +11,6 @@ namespace DAMS.Application.Interfaces
         Task<RevenueCategoryDto?> DeleteAsync(int id, CancellationToken cancellationToken = default);
     }
 
-    public interface IOpeningBalanceService
-    {
-        Task<OpeningBalanceSetDto?> GetCurrentAsync(CancellationToken cancellationToken = default);
-        Task<OpeningBalanceSetDto> CreateAsync(DateTime asAtDate, int? userId, CancellationToken cancellationToken = default);
-        Task<OpeningBalanceSetDto> SaveAsync(int id, SaveOpeningBalanceSetDto dto, int? userId, CancellationToken cancellationToken = default);
-        Task<OpeningBalanceSetDto> CommitAsync(int id, string concurrencyToken, int? userId, CancellationToken cancellationToken = default);
-        Task<OpeningBalanceSetDto> ReopenAsync(int id, ReopenOpeningBalanceSetDto dto, int? userId, CancellationToken cancellationToken = default);
-    }
-
     public interface ICapitalPartnerService
     {
         Task<List<CapitalPartnerDto>> GetAllAsync(bool includeInactive, CancellationToken cancellationToken = default);

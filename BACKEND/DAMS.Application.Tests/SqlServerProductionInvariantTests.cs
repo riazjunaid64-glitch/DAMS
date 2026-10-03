@@ -29,6 +29,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -5425,18 +5426,18 @@ public sealed class SqlServerProductionInvariantTests
     /// The cutover preflight, against a real database, because that is the only place its SQL exists.
     /// <para>
     /// It probes fifteen tables for a count and an earliest date, and it runs at exactly one moment in
-    /// the system's life — the go-live commit. An in-memory test proves the logic and nothing about
+    /// the system's life — the moment the go-live date is set or moved. An in-memory test proves the logic and nothing about
     /// the translation: if any of those probes cannot be turned into SQL, the failure surfaces as an
     /// exception during the client's cutover, which is the worst possible time to find out.
     /// </para>
     /// </summary>
     [SqlServerFact]
-    public async Task TheCutoverPreflight_RunsAsRealSql_AndBlocksACommitOverExistingHistory()
+    public async Task TheCutoverPreflight_RunsAsRealSql_AndBlocksAGoLiveDateOverExistingHistory()
     {
         await using var database = await SqlTestDatabase.CreateAsync();
         var options = Options(database.ConnectionString);
         var goLive = new DateTime(2026, 8, 1);
-        int bankId, capitalId;
+        int bankId;
 
         await using (var db = new AppDbContext(options))
         {
@@ -5446,38 +5447,27 @@ public sealed class SqlServerProductionInvariantTests
                 Name = "Cutover Bank Probe", AccountHolderName = "Seven Ventures",
                 Type = FinanceAccountType.Bank, IsActive = true
             };
-            var capital = new FinanceAccount
-            {
-                Name = "Cutover Capital Probe", AccountHolderName = "Partner One",
-                Type = FinanceAccountType.Capital, IsActive = true
-            };
-            db.FinanceAccounts.AddRange(bank, capital);
+            db.FinanceAccounts.Add(bank);
             await db.SaveChangesAsync();
             bankId = bank.Id;
-            capitalId = capital.Id;
         }
 
         // Clean database, nothing behind the cutover: every probe must translate and come back empty.
         await using (var db = new AppDbContext(options))
         {
             Assert.Empty(await FinanceDateRules.PreBaselineEventsAsync(db, goLive, default));
-            var service = new OpeningBalanceService(db);
-            var set = await service.CreateAsync(goLive, 1);
-            set = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
+            var wht = new WhtService(db, new FinanceAccountService(db));
+            var current = await wht.GetSettingsAsync();
+            var saved = await wht.UpdateSettingsAsync(new SaveFinanceSettingsDto
             {
-                ConcurrencyToken = set.ConcurrencyToken,
-                Entries =
-                [
-                    new() { FinanceAccountId = bankId, DebitAmount = 1_000_000m },
-                    new() { FinanceAccountId = capitalId, CreditAmount = 1_000_000m }
-                ]
-            }, 1);
-            var committed = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
-            Assert.True(committed.IsCommitted);
+                FinancialYearStartMonth = 7, GoLiveDate = goLive, ConcurrencyToken = current.ConcurrencyToken
+            }, "admin");
+            Assert.Equal(goLive, saved.GoLiveDate);
+            Assert.Equal(goLive, await FinanceDateRules.BaselineAsync(db, default));
         }
 
-        // Now put a July expense in — the pilot-month case — and prove the reopened set cannot be
-        // recommitted over it. The probe has to find it and name the date.
+        // Now put a July expense in — the pilot-month case — and prove a later date cannot be set
+        // over it. The probe has to find it and name the date.
         await using (var db = new AppDbContext(options))
         {
             db.Expenses.Add(new Expense
@@ -5492,16 +5482,181 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal(1, found.Count);
             Assert.Equal(new DateTime(2026, 7, 25), found.Earliest);
 
-            var service = new OpeningBalanceService(db);
-            var current = await service.GetCurrentAsync();
-            var reopened = await service.ReopenAsync(current!.Id, new ReopenOpeningBalanceSetDto
-            {
-                WarningAccepted = true, ConcurrencyToken = current.ConcurrencyToken
-            }, 1);
+            var service = new WhtService(db, new FinanceAccountService(db));
+            var current = await service.GetSettingsAsync();
             var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                service.CommitAsync(reopened.Id, reopened.ConcurrencyToken, 1));
+                service.UpdateSettingsAsync(new SaveFinanceSettingsDto
+                {
+                    FinancialYearStartMonth = 7, GoLiveDate = goLive.AddDays(1),
+                    ConcurrencyToken = current.ConcurrencyToken
+                }, "admin"));
             Assert.Contains("1 expenses", error.Message);
             Assert.Contains("25 Jul 2026", error.Message);
+        }
+    }
+
+    /// <summary>
+    /// A new account with an opening balance is an account plus its "Created" history row, written in one
+    /// retried transaction. A transient failure after the account insert, before the commit, or after a
+    /// commit whose answer is lost must still end with exactly one account and one history row that
+    /// points at it — never none, a duplicate, or an orphan row.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ANewAccountWithAnOpening_IsExactlyOneAccountAndOneHistoryRow_WhateverTransientFaultHitsTheRetry()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var migrate = new AppDbContext(Options(database.ConnectionString)))
+            await migrate.Database.MigrateAsync();
+
+        var faults = new InjectedFaults();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlServer(database.ConnectionString, sql => sql.ExecutionStrategy(dependencies => new FaultTolerantStrategy(dependencies)))
+            .AddInterceptors(faults.Commands, faults.Transactions)
+            .Options;
+
+        foreach (var fault in new[] { "audit-insert", "before-commit", "after-commit" })
+        {
+            var name = $"Retry account {fault}";
+            await using var db = new AppDbContext(options);
+            db.ActorUserId = 7;
+            faults.Armed = fault;
+
+            var created = await new FinanceAccountService(db).CreateAsync(new CreateFinanceAccountDto
+            {
+                Name = name, Type = FinanceAccountType.Bank, AccountHolderName = "DAMS", OpeningBalance = 12_345.67m
+            });
+
+            Assert.Null(faults.Armed);   // the fault really fired
+            var connection = database.ConnectionString;
+            Assert.Equal(1, await ScalarAsync(connection, $"SELECT COUNT(*) FROM [FinanceAccounts] WHERE [Name] = N'{name}'"));
+            Assert.Equal(created.Id, await ScalarAsync(connection, $"SELECT [Id] FROM [FinanceAccounts] WHERE [Name] = N'{name}'"));
+            Assert.Equal(1, await ScalarAsync(connection, $"SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'FinanceAccount' AND [Action] = 'Created' AND [RecordId] = {created.Id}"));
+            Assert.Equal(12_345.67m, created.OpeningBalance);
+        }
+
+        // No history row exists for an account that is not there.
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [FinanceRecordAudits] a WHERE a.[RecordType] = 'FinanceAccount' AND a.[Action] = 'Created' AND NOT EXISTS (SELECT 1 FROM [FinanceAccounts] f WHERE f.[Id] = a.[RecordId])"));
+        Assert.Equal(3, await ScalarAsync(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'FinanceAccount' AND [Action] = 'Created'"));
+    }
+
+    private sealed class InjectedTransientFault : Exception { }
+
+    private sealed class FaultTolerantStrategy(ExecutionStrategyDependencies dependencies)
+        : ExecutionStrategy(dependencies, 3, TimeSpan.FromMilliseconds(5))
+    {
+        protected override bool ShouldRetryOn(Exception exception) => exception is InjectedTransientFault;
+    }
+
+    /// <summary>Throws one transient fault, once, at the named point of the next write.</summary>
+    private sealed class InjectedFaults
+    {
+        public string? Armed { get; set; }
+        public DbCommandInterceptor Commands { get; }
+        public DbTransactionInterceptor Transactions { get; }
+
+        public InjectedFaults()
+        {
+            Commands = new AuditInsertFault(this);
+            Transactions = new CommitFault(this);
+        }
+
+        private bool Fire(string point)
+        {
+            if (Armed != point) return false;
+            Armed = null;
+            return true;
+        }
+
+        private sealed class AuditInsertFault(InjectedFaults owner) : DbCommandInterceptor
+        {
+            public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+                DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken)
+            {
+                if (command.CommandText.Contains("INSERT INTO [FinanceRecordAudits]") && owner.Fire("audit-insert"))
+                    throw new InjectedTransientFault();
+                return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+            }
+        }
+
+        private sealed class CommitFault(InjectedFaults owner) : DbTransactionInterceptor
+        {
+            public override ValueTask<InterceptionResult> TransactionCommittingAsync(
+                DbTransaction transaction, TransactionEventData eventData, InterceptionResult result, CancellationToken cancellationToken)
+            {
+                if (owner.Fire("before-commit")) throw new InjectedTransientFault();
+                return base.TransactionCommittingAsync(transaction, eventData, result, cancellationToken);
+            }
+
+            public override Task TransactionCommittedAsync(
+                DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+            {
+                // The commit has happened; the caller is told it failed, as when the connection drops
+                // before the answer arrives.
+                if (owner.Fire("after-commit")) throw new InjectedTransientFault();
+                return base.TransactionCommittedAsync(transaction, eventData, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The one-way KAN-91 migration, run from the exact schema and data an upgrade starts from. It drops
+    /// three tables, so what it keeps has to be proven on SQL Server rather than trusted: the go-live
+    /// date, the copied history rows, and every account's opening balance. One database per state of
+    /// the old singleton set — committed, reopened (committed once, then unlocked) and never committed.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheGoLiveMigration_KeepsDateHistoryAndBalances_ForCommittedReopenedAndUncommittedSets()
+    {
+        const string before = "20261001145447_DocumentSetupAskEveryCustomer";
+        var cases = new[]
+        {
+            (Name: "committed", IsCommitted: 1, CommittedAt: "'2026-08-02T06:00:00'", Expected: (DateTime?)new DateTime(2026, 8, 1)),
+            (Name: "reopened", IsCommitted: 0, CommittedAt: "'2026-08-02T06:00:00'", Expected: (DateTime?)new DateTime(2026, 8, 1)),
+            (Name: "uncommitted", IsCommitted: 0, CommittedAt: "NULL", Expected: (DateTime?)null),
+        };
+
+        foreach (var scenario in cases)
+        {
+            await using var database = await SqlTestDatabase.CreateAsync();
+            var options = Options(database.ConnectionString);
+            await using (var db = new AppDbContext(options))
+                await db.GetService<IMigrator>().MigrateAsync(before);
+
+            await ExecuteAsync(database.ConnectionString, $"""
+                INSERT INTO [FinanceAccounts] ([Name], [Type], [AccountHolderName], [OpeningBalance], [IsActive], [CreatedAt], [UpdatedAt])
+                VALUES (N'Upgrade Bank', 2, N'DAMS', 1000000, 1, SYSUTCDATETIME(), SYSUTCDATETIME()),
+                       (N'Upgrade Capital', 6, N'Partner', 1000000, 1, SYSUTCDATETIME(), SYSUTCDATETIME()),
+                       (N'Upgrade Spare', 1, N'DAMS', 0, 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+                INSERT INTO [OpeningBalanceSets] ([AsAtDate], [IsCommitted], [CommittedAt], [CommittedByUserId])
+                VALUES ('2026-08-01', {scenario.IsCommitted}, {scenario.CommittedAt}, 7);
+                DECLARE @Set int = CONVERT(int, SCOPE_IDENTITY());
+                INSERT INTO [OpeningBalanceEntries] ([OpeningBalanceSetId], [FinanceAccountId], [DebitAmount], [CreditAmount], [Note])
+                SELECT @Set, a.[Id],
+                       CASE WHEN a.[Name] = N'Upgrade Bank' THEN 1000000 ELSE 0 END,
+                       CASE WHEN a.[Name] = N'Upgrade Capital' THEN 1000000 ELSE 0 END,
+                       CASE WHEN a.[Name] = N'Upgrade Bank' THEN N'Per the 31 Jul trial balance' END
+                FROM [FinanceAccounts] a;
+                INSERT INTO [OpeningBalanceAuditEntries] ([OpeningBalanceSetId], [Action], [UserId], [OccurredAt], [Note])
+                VALUES (@Set, N'Committed', 7, '2026-08-02T06:00:00', N'Cutover'),
+                       (@Set, N'Reopened', 7, '2026-08-05T06:00:00', N'Accountant correction');
+                """);
+            var balancesBefore = await ScalarAsync<decimal>(database.ConnectionString, "SELECT SUM([OpeningBalance]) FROM [FinanceAccounts]");
+
+            await using (var db = new AppDbContext(options))
+                await db.Database.MigrateAsync();
+
+            await using var check = new AppDbContext(options);
+            Assert.Equal(scenario.Expected, await FinanceDateRules.BaselineAsync(check, default));
+            Assert.Equal(balancesBefore, await ScalarAsync<decimal>(database.ConnectionString, "SELECT SUM([OpeningBalance]) FROM [FinanceAccounts]"));
+            Assert.Equal(0, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM sys.tables WHERE [name] LIKE 'OpeningBalance%'"));
+
+            // Both audit lines survive with their note and action; only the entries that carried a note
+            // or an amount become per-account history (the zero, noteless one does not).
+            Assert.Equal(2, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'OpeningBalanceSet'"));
+            Assert.Equal(1, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'OpeningBalanceSet' AND [Action] = 'Reopened' AND [Changes] LIKE '%Accountant correction%' AND [ActorUserId] = 7"));
+            Assert.Equal(2, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'FinanceAccount' AND [Action] = 'OpeningNote'"));
+            Assert.Equal(1, await ScalarAsync<int>(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [Action] = 'OpeningNote' AND [Changes] LIKE '%Per the 31 Jul trial balance%'"));
         }
     }
 
@@ -5824,7 +5979,8 @@ public sealed class SqlServerProductionInvariantTests
 
         Assert.Equal(2, eightProjects.Commands);       // base account page + grouped movements
         Assert.Equal(2, sixteenProjects.Commands);     // volume must not add database commands
-        Assert.Equal(2, overview.Commands);
+        // The overview adds one fixed singleton read, the go-live date, to the same two; volume adds none.
+        Assert.Equal(3, overview.Commands);   // accounts + grouped movements + go-live setting
 
         var bank = Assert.Single(sixteenProjects.Result.Items, a => a.Name == "Bank 1");
         Assert.Equal(0m, bank.RevenueReceived);

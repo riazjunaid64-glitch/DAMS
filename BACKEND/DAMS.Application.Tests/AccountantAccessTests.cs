@@ -42,7 +42,6 @@ public sealed class AccountantAccessTests
         typeof(FinanceAccountsController),
         typeof(FinanceController),
         typeof(LoansController),
-        typeof(OpeningBalancesController),
         typeof(ProjectController),
         typeof(RevenueCategoriesController),
         typeof(StaffCashController),

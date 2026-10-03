@@ -67,6 +67,8 @@ export interface FinanceSettings {
   financialYearStartMonth: number;
   whtRatesConfirmedAt: string | null;
   whtRatesConfirmedByName: string | null;
+  /** The first day DAMS records movements for; null until one is saved. */
+  goLiveDate: string | null;
   currentFinancialYear: string;
   concurrencyToken: string;
 }

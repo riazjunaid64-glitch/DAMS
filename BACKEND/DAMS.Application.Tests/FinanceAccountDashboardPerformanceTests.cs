@@ -56,10 +56,7 @@ public sealed class FinanceAccountDashboardPerformanceTests
     {
         await using var context = Context();
         var world = await SeedAsync(context);
-        context.OpeningBalanceSets.Add(new OpeningBalanceSet
-        {
-            AsAtDate = Day, IsCommitted = true, CommittedAt = Day
-        });
+        await GoLiveSeed.SetAsync(context, Day);
         await context.SaveChangesAsync();
         var service = Finance(context);
         var date = Day.AddDays(daysAfterActivity);

@@ -59,8 +59,5 @@ namespace DAMS.Domain.Enums
 
         public static bool CanPayExpense(FinanceAccountType type) =>
             IsCashLike(type) || type == FinanceAccountType.StaffFloat;
-
-        public static decimal ToNormalBalance(FinanceAccountType type, decimal debit, decimal credit) =>
-            IsDebitNormal(type) ? debit - credit : credit - debit;
     }
 }

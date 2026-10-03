@@ -163,77 +163,6 @@ public sealed class FinanceReportingAndCapitalTests
     }
 
     [Fact]
-    public async Task OpeningBalanceCommit_RequiresEquality_WritesNormalSigns_AndReopenIsAudited()
-    {
-        await using var context = Context();
-        context.FinanceAccounts.AddRange(
-            new FinanceAccount { Id = 1, Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true },
-            new FinanceAccount { Id = 2, Name = "Capital", AccountHolderName = "Partner", Type = FinanceAccountType.Capital, IsActive = true });
-        await context.SaveChangesAsync();
-        var service = new OpeningBalanceService(context);
-        var set = await service.CreateAsync(new DateTime(2026, 7, 1), 1);
-        set = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
-        {
-            ConcurrencyToken = set.ConcurrencyToken,
-            Entries =
-            [
-                new() { FinanceAccountId = 1, DebitAmount = 1_000m },
-                new() { FinanceAccountId = 2, CreditAmount = 900m }
-            ]
-        }, 1);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CommitAsync(set.Id, set.ConcurrencyToken, 1));
-        set = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
-        {
-            ConcurrencyToken = set.ConcurrencyToken,
-            Entries =
-            [
-                new() { FinanceAccountId = 1, DebitAmount = 1_000m },
-                new() { FinanceAccountId = 2, CreditAmount = 1_000m }
-            ]
-        }, 1);
-        set = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
-        Assert.True(set.IsCommitted);
-        Assert.All(await context.FinanceAccounts.ToListAsync(), account => Assert.Equal(1_000m, account.OpeningBalance));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto(), 1));
-        set = await service.ReopenAsync(set.Id, new ReopenOpeningBalanceSetDto
-        {
-            WarningAccepted = true, Note = "Accountant correction", ConcurrencyToken = set.ConcurrencyToken
-        }, 7);
-        Assert.False(set.IsCommitted);
-        Assert.Contains(set.AuditEntries, entry => entry.Action == "Reopened" && entry.UserId == 7);
-    }
-
-    [Fact]
-    public async Task OpeningBalanceDraft_IncludesAccountsAddedLater_AndControlsTheirOpeningAmount()
-    {
-        await using var context = Context();
-        context.FinanceAccounts.Add(new FinanceAccount
-        {
-            Id = 1, Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
-        });
-        await context.SaveChangesAsync();
-        var service = new OpeningBalanceService(context);
-        var set = await service.CreateAsync(new DateTime(2026, 7, 1), 1);
-        context.FinanceAccounts.Add(new FinanceAccount
-        {
-            Id = 2, Name = "Receivable", AccountHolderName = "DAMS", Type = FinanceAccountType.Receivable,
-            OpeningBalance = 500m, IsActive = true
-        });
-        await context.SaveChangesAsync();
-
-        set = Assert.IsType<OpeningBalanceSetDto>(await service.GetCurrentAsync());
-        Assert.Equal(2, set.Entries.Count);
-        set = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
-        {
-            ConcurrencyToken = set.ConcurrencyToken,
-            Entries = set.Entries.Select(e => new SaveOpeningBalanceEntryDto { FinanceAccountId = e.FinanceAccountId }).ToList()
-        }, 1);
-        await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
-
-        Assert.All(await context.FinanceAccounts.ToListAsync(), account => Assert.Equal(0m, account.OpeningBalance));
-    }
-
-    [Fact]
     public async Task AUsedRevenueCategory_IsRetiredRatherThanDeleted_SoHistoricIncomeKeepsItsLabel()
     {
         await using var context = Context();
@@ -413,7 +342,7 @@ public sealed class FinanceReportingAndCapitalTests
                 FinanceAccountId = empty.Id, ConcurrencyToken = loaded.ConcurrencyToken
             }));
 
-        Assert.Contains("committed opening capital", error.Message);
+        Assert.Contains("opening capital", error.Message);
         // The link, and therefore the opening capital the statement reads through it, is untouched.
         Assert.Equal(brought.Id, (await context.CapitalPartners.AsNoTracking().SingleAsync()).FinanceAccountId);
         Assert.Equal(500_000m, (await partners.GetAllAsync(true)).Single().OpeningBalance);

@@ -22,6 +22,10 @@ namespace DAMS.Domain.Entities
 
         public string? WhtRatesConfirmedByName { get; set; }
 
+        /// <summary>The first day DAMS records movements for. Opening balances are the position at
+        /// the start of this day. Null until it is set, and then there is no posting-date limit.</summary>
+        public DateTime? GoLiveDate { get; set; }
+
         public DateTime? UpdatedAt { get; set; }
         public byte[] RowVersion { get; set; } = [];
     }

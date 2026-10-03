@@ -453,7 +453,7 @@ public sealed class BookingCancellationSettlementTests
     public async Task PayPendingRefund_DateBeforeOpeningBalanceDate_IsRejected()
     {
         // Cancelled well before go-live, so the refund date passes the cancellation check and only the
-        // committed opening-balance date can refuse it.
+        // go-live date can refuse it.
         // Settlements are append-only, so the historical one is inserted as it would have been
         // recorded back then rather than edited after the fact.
         var h = await Harness.Create(paid: 500_000m);
@@ -465,10 +465,7 @@ public sealed class BookingCancellationSettlementTests
             IdempotencyKey = "historical-cancel", CancelledByUserId = 42, CancelledByName = "Finance Admin",
             CancelledAt = DateTime.UtcNow.AddDays(-5), CancellationDate = PakistanTime.Today.AddDays(-5)
         });
-        h.Context.OpeningBalanceSets.Add(new OpeningBalanceSet
-        {
-            AsAtDate = PakistanTime.Today.AddDays(-2), IsCommitted = true, CommittedAt = DateTime.UtcNow, CommittedByUserId = 1
-        });
+        await GoLiveSeed.SetAsync(h.Context, PakistanTime.Today.AddDays(-2));
         await h.Context.SaveChangesAsync();
 
         var pay = new PayCancellationRefundDto
@@ -477,7 +474,7 @@ public sealed class BookingCancellationSettlementTests
             PaidAt = PakistanTime.Today.AddDays(-3), IdempotencyKey = "before-opening-pay"
         };
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.PayCancellationRefundAsync(h.BookingId, pay, Actor));
-        Assert.Contains("committed opening balance date", error.Message);
+        Assert.Contains("go-live date", error.Message);
     }
 
     [Fact]

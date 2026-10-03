@@ -205,10 +205,7 @@ public sealed class FinanceDashboardIntegrityTests
         };
         context.Add(bank);
         await context.SaveChangesAsync();
-        context.OpeningBalanceSets.Add(new OpeningBalanceSet
-        {
-            AsAtDate = new DateTime(2026, 8, 1), IsCommitted = true, CommittedAt = new DateTime(2026, 8, 1, 6, 0, 0, DateTimeKind.Utc)
-        });
+        await GoLiveSeed.SetAsync(context, new DateTime(2026, 8, 1));
         await context.SaveChangesAsync();
         var service = Finance(context);
 

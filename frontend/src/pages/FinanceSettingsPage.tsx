@@ -10,12 +10,11 @@ import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from ".
 import * as whtApi from "../features/finance/whtApi.ts";
 import { pakistanToday } from "../lib/financePeriods.ts";
 import { newIdempotencyKey } from "../lib/idempotency.ts";
-import OpeningBalancesPanel from "../features/finance/OpeningBalancesPanel.tsx";
+import { FinancialYearCard } from "../features/finance/FinancialYearCard.tsx";
 import RevenueCategoriesPanel from "../features/finance/RevenueCategoriesPanel.tsx";
 import { listRevenueCategories, type RevenueCategory } from "../features/finance/revenueCategoryApi.ts";
 import {
   FILER_STATUSES,
-  MONTHS,
   filerLabel,
   formatRate,
   formatRs,
@@ -30,7 +29,7 @@ import {
 
 type Props = { user: User | null };
 type FinanceAccountOption = { id: number; name: string; accountHolderName: string; isActive: boolean };
-type Tab = "rates" | "revenue" | "vendors" | "payable" | "opening" | "year";
+type Tab = "rates" | "revenue" | "vendors" | "payable" | "year";
 
 export default function FinanceSettingsPage({ user }: Props) {
   const navigate = useNavigate();
@@ -116,7 +115,6 @@ function SettingsWorkspace() {
             { id: "revenue", label: "Revenue categories", count: revenueCategories.length },
             { id: "vendors", label: "Vendors" },
             { id: "payable", label: "WHT payable" },
-            { id: "opening", label: "Opening balances" },
             { id: "year", label: "Financial year" },
           ]}
         />
@@ -130,7 +128,6 @@ function SettingsWorkspace() {
               {tab === "revenue" && <RevenueCategoriesPanel categories={revenueCategories} onChanged={loadShared} />}
               {tab === "vendors" && <VendorsTab />}
               {tab === "payable" && <PayableTab />}
-              {tab === "opening" && <OpeningBalancesPanel />}
               {tab === "year" && settings && <YearTab settings={settings} onSaved={loadShared} />}
             </>
           )}
@@ -937,16 +934,17 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
 // ── Financial year ────────────────────────────────────────────────────────────
 
 function YearTab({ settings, onSaved }: { settings: FinanceSettings; onSaved: () => Promise<void> }) {
-  const [month, setMonth] = useState(String(settings.financialYearStartMonth));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
+  // The Rate confirmation buttons below keep the saved year and send no go-live date.
   const submit = async (extra: { markRatesConfirmed?: boolean; clearRatesConfirmation?: boolean }) => {
     setSaving(true); setError(null); setMessage(null);
     try {
       await whtApi.saveSettings({
-        financialYearStartMonth: Number(month),
+        financialYearStartMonth: settings.financialYearStartMonth,
+        goLiveDate: null,
         markRatesConfirmed: false,
         clearRatesConfirmation: false,
         ...extra,
@@ -961,27 +959,7 @@ function YearTab({ settings, onSaved }: { settings: FinanceSettings; onSaved: ()
 
   return (
     <div className="max-w-2xl">
-      <h2 className="text-lg font-semibold text-[var(--text-heading)]">Financial year</h2>
-      <p className="mt-1 text-sm text-[var(--text-muted)]">
-        Annual withholding thresholds reset at the start of this month. Pakistan's tax year runs
-        1 July – 30 June.
-      </p>
-
-      {error && <div className="mt-4"><ErrorBanner message={error} /></div>}
-      {message && (
-        <p className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">{message}</p>
-      )}
-
-      <div className="mt-5 space-y-4">
-        <div>
-          <Label required>Year starts in</Label>
-          <AppSelect className={inputClass} value={month} onChange={(e) => setMonth(e.target.value)}>
-            {MONTHS.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
-          </AppSelect>
-          <p className="mt-1 text-xs text-[var(--text-muted)]">Current financial year: {settings.currentFinancialYear}</p>
-        </div>
-        <Button disabled={saving} onClick={() => void submit({})}>{saving ? "Saving…" : "Save"}</Button>
-      </div>
+      <FinancialYearCard settings={settings} onSaved={onSaved} />
 
       <hr className="my-8 border-[var(--border)]" />
 
@@ -991,6 +969,10 @@ function YearTab({ settings, onSaved }: { settings: FinanceSettings; onSaved: ()
         other. Confirming records that an accountant has checked them against the current Finance
         Act, and removes the warning banner.
       </p>
+      {error && <div className="mt-4"><ErrorBanner message={error} /></div>}
+      {message && (
+        <p className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">{message}</p>
+      )}
       <div className="mt-5">
         {settings.whtRatesConfirmedAt ? (
           <div className="space-y-3">

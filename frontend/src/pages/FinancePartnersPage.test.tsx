@@ -911,17 +911,17 @@ describe("Statement", () => {
     expect(rows()[1]![0]).toBe("Sep 30, 2026");
   });
 
-  it("shows the go-live Opening balance row as money in, labelled Opening balance", async () => {
+  it("shows the go-live Opening balance row as money in, without repeating its own label as a note", async () => {
     api.statement.mockResolvedValue(statement({
-      closingBalance: 500, transactions: [movement({ id: 9, type: "OpeningBalance", amount: 500, financeAccountId: null, reference: null, note: "Committed opening balance" })],
+      closingBalance: 500, transactions: [movement({ id: 9, type: "OpeningBalance", amount: 500, financeAccountId: null, reference: null, note: "Opening balance" })],
     }));
     await open();
     await dialog().findAllByText("Opening balance", { selector: "span.font-extrabold" });
     const lines = rows();
-    expect(lines[1]![1]).toContain("Opening balance");
+    expect(lines[1]![1]).toBe("Opening balance");
     expect(lines[1]![3]).toBe("Rs 500");
     expect(lines[1]![4]).toBe("Rs 500");
-    expect(dialog().queryByText(/Committed/)).toBeTruthy();
+    // The server's note is the same words as the row's label, so the cell holds them once.
   });
 
   it("says so when there are no movements in the period", async () => {

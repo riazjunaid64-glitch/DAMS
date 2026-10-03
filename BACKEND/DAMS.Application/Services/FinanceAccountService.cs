@@ -45,7 +45,7 @@ namespace DAMS.Application.Services
             {
                 Items = pageIds.Take(take).Where(accountsById.ContainsKey).Select(id => accountsById[id]).ToList(),
                 HasMore = pageIds.Count > take,
-                Overview = BuildOverview(accounts)
+                Overview = BuildOverview(accounts, await FinanceDateRules.BaselineAsync(_context, cancellationToken))
             };
         }
 
@@ -593,7 +593,7 @@ namespace DAMS.Application.Services
                     && (!baseline.HasValue || baseline.Value.Date <= from.Value)
                         ? account.OpeningBalance
                         : 0m;
-                // A committed opening balance is the position at the START of its date. Therefore
+                // The opening balance is the position at the START of the go-live date. Therefore
                 // From == baseline includes it here, before the first in-period transaction.
                 openingNormalBalance = storedOpening + priorMovement;
             }
@@ -606,8 +606,8 @@ namespace DAMS.Application.Services
                 periodRows = periodRows.Where(row => row.Date < toExclusive);
             }
 
-            // Once a committed baseline exists, earlier movements are already represented by its
-            // opening figures. A valid committed set has none, but the floor also protects a report
+            // Once a go-live date is set, earlier movements are already represented by the opening
+            // figures. A valid setup has none, but the floor also protects a report
             // from double-counting legacy data if an invariant is ever bypassed operationally.
             if (baseline.HasValue)
                 periodRows = periodRows.Where(row => row.Date >= baseline.Value.Date);
@@ -650,7 +650,7 @@ namespace DAMS.Application.Services
                     RecordId = account.Id,
                     Date = baseline!.Value.Date,
                     Label = account.Name,
-                    Description = "Committed opening balance",
+                    Description = "Opening balance",
                     ProjectId = null,
                     ProjectName = "General",
                     Amount = account.OpeningBalance,
@@ -659,7 +659,7 @@ namespace DAMS.Application.Services
                     PostedAt = baseline.Value.Date,
                     SourceOrder = 0
                 });
-                // The committed opening is the start-of-business-day boundary. Its stored
+                // The opening balance is the start-of-business-day boundary. Its stored
                 // audit timestamp is synthetic, so rank it ahead of every real event before
                 // comparing audit instants (which may be recorded in UTC).
                 rows = rows.OrderBy(row => row.Date)
@@ -683,13 +683,23 @@ namespace DAMS.Application.Services
         public async Task<FinanceAccountsOverviewDto> GetOverviewAsync(CancellationToken cancellationToken = default)
         {
             var accounts = await LoadAccountsAsync(_context.FinanceAccounts.AsNoTracking(), cancellationToken);
-            return BuildOverview(accounts);
+            return BuildOverview(accounts, await FinanceDateRules.BaselineAsync(_context, cancellationToken));
         }
 
-        private static FinanceAccountsOverviewDto BuildOverview(List<FinanceAccountResponseDto> accounts)
+        private static FinanceAccountsOverviewDto BuildOverview(List<FinanceAccountResponseDto> accounts, DateTime? goLiveDate)
         {
+            // Each opening balance is typed on the account's normal side; a minus means the other side.
+            var openingAsDebit = accounts.Select(a =>
+                AccountBalanceDirection.IsDebitNormal(a.Type) ? a.OpeningBalance : -a.OpeningBalance).ToList();
             return new FinanceAccountsOverviewDto
             {
+                OpeningDebitTotal = Math.Round(openingAsDebit.Where(v => v > 0m).Sum(), 2),
+                OpeningCreditTotal = Math.Round(-openingAsDebit.Where(v => v < 0m).Sum(), 2),
+                GoLiveDate = goLiveDate?.Date,
+                HolderNames = accounts.Select(a => a.AccountHolderName.Trim())
+                    .Where(name => name.Length > 0)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList(),
                 ActiveAccounts = accounts.Count(a => a.IsActive),
                 InactiveAccounts = accounts.Count(a => !a.IsActive),
                 TotalBalance = accounts.Where(a => AccountBalanceDirection.IsCashLike(a.Type)).Sum(a => a.CurrentBalance),
@@ -707,8 +717,6 @@ namespace DAMS.Application.Services
         public async Task<FinanceAccountResponseDto> CreateAsync(CreateFinanceAccountDto dto, CancellationToken cancellationToken = default)
         {
             Validate(dto);
-            if (dto.OpeningBalance != 0m && await _context.OpeningBalanceSets.AnyAsync(cancellationToken))
-                throw new InvalidOperationException("Opening balances are controlled in Finance settings. Reopen the baseline to add this amount.");
             await EnsureUniqueName(dto.Name, null, cancellationToken);
             await EnsureUniqueStaffHolderAsync(dto, null, cancellationToken);
             var account = new FinanceAccount
@@ -719,9 +727,85 @@ namespace DAMS.Application.Services
                 BankOrWalletName = Clean(dto.BankOrWalletName), Description = Clean(dto.Description),
                 IsActive = true, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
             };
-            _context.FinanceAccounts.Add(account);
-            await _context.SaveChangesAsync(cancellationToken);
-            return await GetByIdAsync(account.Id, cancellationToken);
+            if (account.OpeningBalance == 0m)
+            {
+                _context.FinanceAccounts.Add(account);
+                await _context.SaveChangesAsync(cancellationToken);
+                return await GetByIdAsync(account.Id, cancellationToken);
+            }
+
+            // A non-zero opening on a new account moves every report from the go-live date, so its
+            // 0 -> figure leaves the same history row an edit would. The id only exists after the
+            // insert, so both writes share one transaction and neither can be left without the other.
+            var id = await InsertWithOpeningHistoryAsync(account, cancellationToken);
+            return await GetByIdAsync(id, cancellationToken);
+        }
+
+        /// <summary>
+        /// Inserts the account and its "Created" history row as one unit that is safe to replay.
+        /// <para>
+        /// The database retries a failed transaction by running the whole block again, but the context
+        /// remembers the first attempt: a rolled-back insert leaves the account tracked as saved, with
+        /// an id that no longer exists. So every attempt first puts the tracker back to "not inserted
+        /// yet", and a commit whose answer was lost is recognised by looking for the committed pair
+        /// instead of inserting a second one.
+        /// </para>
+        /// </summary>
+        private async Task<int> InsertWithOpeningHistoryAsync(FinanceAccount account, CancellationToken cancellationToken)
+        {
+            FinanceRecordAudit? history = null;
+
+            async Task<int> Attempt(CancellationToken ct)
+            {
+                if (history != null) _context.Entry(history).State = EntityState.Detached;
+                var tracked = _context.Entry(account);
+                if (tracked.State != EntityState.Added)
+                {
+                    tracked.State = EntityState.Detached;
+                    account.Id = 0;
+                    account.RowVersion = [];
+                    _context.FinanceAccounts.Add(account);
+                }
+                await _context.SaveChangesAsync(ct);
+                history = new FinanceRecordAudit
+                {
+                    RecordType = nameof(FinanceAccount),
+                    RecordId = account.Id,
+                    Action = "Created",
+                    Changes = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+                    {
+                        [nameof(FinanceAccount.OpeningBalance)] = new Dictionary<string, object?>
+                        {
+                            ["from"] = "0.00",
+                            ["to"] = account.OpeningBalance.ToString("0.00###", System.Globalization.CultureInfo.InvariantCulture)
+                        }
+                    }),
+                    ActorUserId = _context.ActorUserId,
+                    OccurredAt = DateTime.UtcNow
+                };
+                _context.FinanceRecordAudits.Add(history);
+                await _context.SaveChangesAsync(ct);
+                return account.Id;
+            }
+
+            // The name is unique, so it finds the account whatever id this context last saw.
+            Task<int> CommittedId(CancellationToken ct) => _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.Name == account.Name).Select(a => a.Id).SingleAsync(ct);
+
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return await Attempt(cancellationToken);
+
+            await _context.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+                Attempt,
+                async ct =>
+                {
+                    var existing = await _context.FinanceAccounts.AsNoTracking()
+                        .Where(a => a.Name == account.Name).Select(a => (int?)a.Id).SingleOrDefaultAsync(ct);
+                    return existing.HasValue && await _context.FinanceRecordAudits.AsNoTracking().AnyAsync(a =>
+                        a.RecordType == nameof(FinanceAccount) && a.Action == "Created" && a.RecordId == existing.Value, ct);
+                },
+                cancellationToken);
+            return await CommittedId(cancellationToken);
         }
 
         public async Task<FinanceAccountResponseDto> UpdateAsync(int id, UpdateFinanceAccountDto dto, CancellationToken cancellationToken = default)
@@ -730,9 +814,8 @@ namespace DAMS.Application.Services
             var account = await _context.FinanceAccounts.SingleOrDefaultAsync(a => a.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
             ApplyConcurrencyToken(account, dto.ConcurrencyToken);
-            if (dto.OpeningBalance != account.OpeningBalance && await _context.OpeningBalanceSets.AnyAsync(cancellationToken))
-                throw new InvalidOperationException("Opening balances are controlled in Finance settings. Reopen the baseline to change this amount.");
             EnsureSystemIdentityIsPreserved(account, dto);
+            EnsureNoTypedOpeningForBookingDrivenAccount(account, dto);
             await ValidateLinkedLoanAccountAsync(id, dto.Type, dto.OpeningBalance, cancellationToken);
             if (dto.Type != account.Type && await HasDependenciesAsync(id, cancellationToken))
                 throw new InvalidOperationException("An account with financial history cannot change type. Create a correctly typed account and keep this one for reconciliation.");
@@ -1606,6 +1689,21 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("System finance accounts cannot change name, type or ledger code.");
         }
 
+        // Customer deposits, customer receivables and commission payable are worked out per booking
+        // and per commission, so a typed aggregate opening would belong to no booking and could never
+        // be cleared. An unchanged legacy figure can still be saved again.
+        private static void EnsureNoTypedOpeningForBookingDrivenAccount(FinanceAccount account, UpdateFinanceAccountDto dto)
+        {
+            if (account.SystemRole is not (FinanceSystemAccountRole.CustomerDeposits
+                    or FinanceSystemAccountRole.CustomerReceivables
+                    or FinanceSystemAccountRole.CommissionPayable))
+                return;
+            if (dto.OpeningBalance == 0m || dto.OpeningBalance == account.OpeningBalance) return;
+            throw new InvalidOperationException(
+                $"{account.Name} is worked out from bookings and commissions, so it cannot have a typed opening balance. "
+                + "Enter each booking's receipts as payments and each commission as a commission record, and leave this account at 0.");
+        }
+
         private async Task<bool> HasDependenciesAsync(int id, CancellationToken cancellationToken) =>
             await _context.Payments.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
             || await _context.ManualRevenues.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
@@ -1616,7 +1714,7 @@ namespace DAMS.Application.Services
             || await _context.BookingCancellationRefunds.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
             || await _context.BookingCancellationSettlements.AnyAsync(s => s.RefundPayableAccountId == id, cancellationToken)
             || await _context.WhtDeposits.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
-            || await _context.OpeningBalanceEntries.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
+            || await _context.FinanceAccounts.AnyAsync(a => a.Id == id && a.OpeningBalance != 0m, cancellationToken)
             || await _context.CapitalPartners.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
             || await _context.CapitalTransactions.AnyAsync(t => t.FinanceAccountId == id, cancellationToken)
             || await _context.Loans.AnyAsync(l => l.FinanceAccountId == id, cancellationToken)
@@ -1657,6 +1755,9 @@ namespace DAMS.Application.Services
             if (dto.LedgerCode?.Trim().Length > 30) throw new InvalidOperationException("Ledger code cannot exceed 30 characters.");
             if (string.IsNullOrWhiteSpace(dto.AccountHolderName)) throw new InvalidOperationException("Account holder name is required.");
             if (dto.AccountHolderName.Trim().Length > 150) throw new InvalidOperationException("Account holder name cannot exceed 150 characters.");
+            // Stored as decimal(18,2): round once, here, so every comparison, check and history row sees
+            // the figure that is actually saved.
+            dto.OpeningBalance = Math.Round(dto.OpeningBalance, 2, MidpointRounding.AwayFromZero);
             if (Math.Abs(dto.OpeningBalance) > 999_999_999_999_999.99m) throw new InvalidOperationException("Opening balance is outside the supported range.");
             if (dto.BankOrWalletName?.Trim().Length > 150) throw new InvalidOperationException("Bank or wallet name cannot exceed 150 characters.");
             if (dto.Description?.Trim().Length > 1000) throw new InvalidOperationException("Description cannot exceed 1000 characters.");

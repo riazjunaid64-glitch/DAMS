@@ -1,4 +1,5 @@
 using DAMS.Application.Common;
+using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,8 +10,8 @@ namespace DAMS.Application.Services
     /// <para>
     /// This is not a formatting rule — the whole derived-balance model depends on it. An account's
     /// balance is <c>OpeningBalance + every movement ever recorded</c>, and the reports read the
-    /// committed opening balance as an AS-AT baseline: the P&amp;L and Trial Balance windows start at
-    /// <c>AsAtDate</c> precisely because everything before it is already inside the figure the
+    /// go-live date as an AS-AT baseline: the P&amp;L and Trial Balance windows start at
+    /// that date precisely because everything before it is already inside the opening figure the
     /// accountant typed. A row dated before that baseline is therefore counted twice — once inside
     /// the opening balance and once as a movement — and, because the P&amp;L window excludes it while
     /// the cash movement does not, it also puts the Balance Sheet out by its own amount.
@@ -37,7 +38,7 @@ namespace DAMS.Application.Services
 
         /// <summary>
         /// Where the boundary day itself falls, stated once because "as at 31 July" alone does not
-        /// say it. <c>AsAtDate</c> is the FIRST day DAMS records movements for: the opening figures
+        /// say it. The go-live date is the FIRST day DAMS records movements for: the opening figures
         /// are the position at the start of that day, the P&amp;L and Trial Balance windows open on it,
         /// and a posting dated on it is therefore new activity, not part of the baseline. Hence the
         /// bound below is <c>&lt;</c> and not <c>&lt;=</c>, and <see cref="PreBaselineEventsAsync"/>
@@ -50,14 +51,14 @@ namespace DAMS.Application.Services
             + "first day DAMS records movements for, so entries dated on it are new activity.";
 
         /// <summary>
-        /// The committed opening-balance date, or null when the client has not committed a baseline
-        /// yet. Only a committed set counts: a draft can still be edited to any date.
+        /// The go-live date from Finance settings, or null when none is saved yet — and then there
+        /// is no posting-date limit. Every reader of the baseline comes through here.
         /// </summary>
         public static Task<DateTime?> BaselineAsync(AppDbContext context, CancellationToken cancellationToken) =>
-            context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
-                .OrderByDescending(s => s.AsAtDate)
-                .Select(s => (DateTime?)s.AsAtDate)
-                .FirstOrDefaultAsync(cancellationToken);
+            context.FinanceSettings.AsNoTracking()
+                .Where(s => s.Id == FinanceSetting.SingletonId)
+                .Select(s => s.GoLiveDate)
+                .SingleOrDefaultAsync(cancellationToken);
 
         /// <summary>
         /// Validates and normalises the business date a financial record belongs to. Omitting the
@@ -89,10 +90,9 @@ namespace DAMS.Application.Services
         /// <para>
         /// The baseline cannot be judged against the baseline, so <see cref="EnsureAsync"/> is the
         /// wrong rule for it; but the other two bounds matter more here than anywhere else. A future
-        /// go-live date is committed as the position at the start of a day that has not happened,
-        /// and every posting between today and that date is then rejected for being "before the
-        /// committed opening balance date" — the business is locked out of its own finance module
-        /// until the calendar catches up.
+        /// go-live date is the position at the start of a day that has not happened, and every
+        /// posting between today and that date is then rejected for being "before the go-live
+        /// date" — the business is locked out of its own finance module until the calendar catches up.
         /// </para>
         /// </summary>
         public static void EnsureBaselineDate(DateTime date, string field)
@@ -119,8 +119,23 @@ namespace DAMS.Application.Services
             var baseline = await BaselineAsync(context, cancellationToken);
             if (baseline.HasValue && value < baseline.Value.Date)
                 throw new InvalidOperationException(
-                    $"{field} cannot be before the committed opening balance date ({baseline:dd MMM yyyy}). "
+                    $"{field} cannot be before the go-live date ({baseline:dd MMM yyyy}). "
                     + "Everything up to that date is already inside the opening balances.");
+        }
+
+        /// <summary>
+        /// The refusal for a go-live date that would put recorded history on the wrong side of it.
+        /// </summary>
+        public static string CutoverRefusal(DateTime date, IReadOnlyCollection<PreBaselineEvents> found)
+        {
+            var earliest = found.Min(p => p.Earliest);
+            return $"DAMS already holds financial records dated before {date:dd MMM yyyy}: "
+                + string.Join(", ", found.Select(p => $"{p.Count} {p.Label}"))
+                + $". The earliest is dated {earliest:dd MMM yyyy}. Making {date:dd MMM yyyy} the go-live "
+                + "date would count every one of them twice — once inside the opening balances and "
+                + $"again as a movement on top of them. Move the go-live date to {earliest:dd MMM yyyy} "
+                + "or earlier, or remove the records that the opening balances already contain. "
+                + BoundaryConvention;
         }
 
         /// <summary>One source of financial records found on the wrong side of a proposed baseline.</summary>
@@ -130,7 +145,7 @@ namespace DAMS.Application.Services
         /// Every financial record already in DAMS dated before a proposed baseline, by source.
         /// <para>
         /// <see cref="EnsureAsync"/> stops a pre-baseline row being CREATED, which is only half the
-        /// problem: the baseline itself is usually committed onto a database that already holds
+        /// problem: the go-live date is usually set on a database that already holds
         /// history — a pilot month, a migration, real trading before the accountant produced the
         /// cutover trial balance. Those rows are not rejected by anything, because they were legal
         /// when they were written. The reports then add them on top of an opening figure that already
@@ -138,8 +153,8 @@ namespace DAMS.Application.Services
         /// numbers are individually correct, so the Balance Sheet still balances while being wrong.
         /// </para>
         /// <para>
-        /// The only place the question can be settled is the commit, which is why this is a
-        /// precondition there rather than a warning on a report.
+        /// The only place the question can be settled is when the go-live date is set or moved, which
+        /// is why this is a precondition there rather than a warning on a report.
         /// </para>
         /// </summary>
         public static async Task<List<PreBaselineEvents>> PreBaselineEventsAsync(

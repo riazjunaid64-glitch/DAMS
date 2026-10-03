@@ -31,7 +31,6 @@ namespace DAMS.Domain.Entities
         public ICollection<CommissionPayout> CommissionPayouts { get; set; } = new List<CommissionPayout>();
         public ICollection<RebateDisbursement> RebateDisbursements { get; set; } = new List<RebateDisbursement>();
         public ICollection<WhtDeposit> WhtDeposits { get; set; } = new List<WhtDeposit>();
-        public ICollection<OpeningBalanceEntry> OpeningBalanceEntries { get; set; } = new List<OpeningBalanceEntry>();
         public ICollection<CapitalPartner> CapitalPartners { get; set; } = new List<CapitalPartner>();
         public ICollection<CapitalTransaction> CapitalCashTransactions { get; set; } = new List<CapitalTransaction>();
         public ICollection<Loan> Loans { get; set; } = new List<Loan>();

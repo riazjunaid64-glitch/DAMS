@@ -118,10 +118,8 @@ public sealed class TrialBalanceDetailsTests
         {
             Name = "Cutover Income", Code = "cutover-income", DisplayOrder = 1
         };
-        context.AddRange(bank, capital, project, revenueCategory, new OpeningBalanceSet
-        {
-            AsAtDate = baseline, IsCommitted = true, CommittedAt = baseline.ToUniversalTime()
-        });
+        context.AddRange(bank, capital, project, revenueCategory);
+        await GoLiveSeed.SetAsync(context, baseline);
         await context.SaveChangesAsync();
         context.ManualRevenues.Add(new ManualRevenue
         {

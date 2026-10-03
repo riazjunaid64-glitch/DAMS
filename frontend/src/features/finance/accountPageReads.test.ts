@@ -47,4 +47,10 @@ describe("Finance Accounts page reads", () => {
     await expect(readFinanceAccountsPage(filters, true, request)).rejects.toThrow("Accounts could not be loaded.");
     expect(request).toHaveBeenCalledTimes(1);
   });
+
+  it("carries the server's own message when it sends one", async () => {
+    const request = vi.fn<(path: string) => Promise<Response>>(() => Promise.resolve(Response.json({ message: "Finance is being restored." }, { status: 503 })));
+
+    await expect(readFinanceAccountsPage(filters, true, request)).rejects.toThrow("Finance is being restored.");
+  });
 });
