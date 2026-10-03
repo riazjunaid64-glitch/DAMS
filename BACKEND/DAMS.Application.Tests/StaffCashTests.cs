@@ -1,3 +1,4 @@
+using DAMS.Api.Controllers;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
@@ -6,6 +7,7 @@ using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -222,7 +224,7 @@ public sealed class StaffCashTests
             }, 1);
         }
 
-        var whole = await staff.GetStatementAsync(holder.FinanceAccountId, null, 200);
+        var whole = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 200);
         Assert.Equal(12, whole.Items.Count);
         Assert.False(whole.HasMore);
         Assert.Equal(3_600m, whole.Holder.CurrentBalance);
@@ -238,19 +240,234 @@ public sealed class StaffCashTests
 
         // A page is a window onto that statement, not a different one. Balances on page three are
         // only right if the rows above it were accounted for without being fetched.
-        var first = await staff.GetStatementAsync(holder.FinanceAccountId, null, 5);
-        Assert.NotNull(first.NextCursor);
-        var second = await staff.GetStatementAsync(holder.FinanceAccountId, first.NextCursor, 5);
-        Assert.NotNull(second.NextCursor);
-        var third = await staff.GetStatementAsync(holder.FinanceAccountId, second.NextCursor, 5);
+        var first = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 5);
+        var second = await staff.GetStatementAsync(holder.FinanceAccountId, 5, 5);
+        var third = await staff.GetStatementAsync(holder.FinanceAccountId, 10, 5);
+        Assert.Equal([5, 5, 2], new[] { first.Items.Count, second.Items.Count, third.Items.Count });
         Assert.True(first.HasMore);
         Assert.True(second.HasMore);
         Assert.False(third.HasMore);
+        Assert.All(new[] { whole, first, second, third }, page => Assert.Equal(12, page.TotalCount));
 
         Assert.Equal(
             whole.Items.Select(row => (row.RecordType, row.RecordId, row.RunningBalance)),
             first.Items.Concat(second.Items).Concat(third.Items)
                 .Select(row => (row.RecordType, row.RecordId, row.RunningBalance)));
+    }
+
+    [Fact]
+    public async Task CashReturned_NeverExceedsWhatThePersonHolds_OnANewMovementOrACorrection()
+    {
+        await using var context = Context();
+        var cash = new FinanceAccount
+        {
+            Name = "Cash", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Cash, OpeningBalance = 100_000m, IsActive = true
+        };
+        context.FinanceAccounts.Add(cash);
+        var category = Category(1, "Site expense");
+        context.ExpenseCategories.Add(category);
+        await context.SaveChangesAsync();
+        var accounts = new FinanceAccountService(context);
+        var staff = new StaffCashService(context, accounts, TestAttachments.Writer());
+        var finance = Finance(context, accounts);
+        var owed = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Owed" });
+        var holding = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Holding" });
+        var day = PakistanTime.Today.AddDays(-3);
+        SaveStaffCashTransferDto Dto(StaffCashMovementType type, decimal amount, string? token = null) => new()
+        {
+            Type = type, Amount = amount, Date = day, CounterpartyFinanceAccountId = cash.Id, ConcurrencyToken = token
+        };
+
+        // The company owes this person Rs 40: there is nothing to give back.
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        {
+            FinanceAccountId = owed.FinanceAccountId, CategoryId = category.Id, Amount = 40m, Date = day
+        }, 1);
+        var refusedWhenOwed = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.RecordTransferAsync(owed.FinanceAccountId, Dto(StaffCashMovementType.FundsReturned, 10m), 1));
+        Assert.Equal("This person is not holding any company cash to return.", refusedWhenOwed.Message);
+
+        // Holding Rs 10: Rs 50 cannot "come back", Rs 10 can.
+        await staff.RecordTransferAsync(holding.FinanceAccountId, Dto(StaffCashMovementType.FundsGiven, 10m), 1);
+        var tooMuch = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.RecordTransferAsync(holding.FinanceAccountId, Dto(StaffCashMovementType.FundsReturned, 50m), 1));
+        Assert.Contains("more than the Rs 10.00", tooMuch.Message);
+        var back = await staff.RecordTransferAsync(holding.FinanceAccountId, Dto(StaffCashMovementType.FundsReturned, 10m), 1);
+        Assert.Equal(0m, (await staff.GetStatementAsync(holding.FinanceAccountId, 0, 20)).Holder.CurrentBalance);
+
+        // Correcting that return to a larger amount is refused too; correcting it to the same or less is not.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => staff.UpdateTransferAsync(
+            holding.FinanceAccountId, back.RecordId, Dto(StaffCashMovementType.FundsReturned, 11m, back.ConcurrencyToken), 1));
+        await staff.UpdateTransferAsync(
+            holding.FinanceAccountId, back.RecordId, Dto(StaffCashMovementType.FundsReturned, 4m, back.ConcurrencyToken), 1);
+        Assert.Equal(6m, (await staff.GetStatementAsync(holding.FinanceAccountId, 0, 20)).Holder.CurrentBalance);
+
+        // A correction cannot turn a handover into a return of cash that was never held.
+        var given = await staff.RecordTransferAsync(owed.FinanceAccountId, Dto(StaffCashMovementType.FundsGiven, 100m), 1);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => staff.UpdateTransferAsync(
+            owed.FinanceAccountId, given.RecordId, Dto(StaffCashMovementType.FundsReturned, 1m, given.ConcurrencyToken), 1));
+    }
+
+    [Fact]
+    public async Task APageStaysConsistentWithItself_WhenAMovementIsRecordedBetweenTwoPageRequests()
+    {
+        await using var context = Context();
+        var cash = new FinanceAccount
+        {
+            Name = "Cash", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Cash, OpeningBalance = 100_000m, IsActive = true
+        };
+        context.FinanceAccounts.Add(cash);
+        await context.SaveChangesAsync();
+        var staff = new StaffCashService(context, new FinanceAccountService(context), TestAttachments.Writer());
+        var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Kamran" });
+        async Task Give(int daysAgo) => await staff.RecordTransferAsync(holder.FinanceAccountId, new SaveStaffCashTransferDto
+        {
+            Type = StaffCashMovementType.FundsGiven, Amount = 1_000m,
+            Date = PakistanTime.Today.AddDays(-daysAgo), CounterpartyFinanceAccountId = cash.Id
+        }, 1);
+        for (var i = 5; i >= 1; i--) await Give(i);
+
+        var first = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 3);
+        await Give(0);
+        var second = await staff.GetStatementAsync(holder.FinanceAccountId, 3, 3);
+
+        // Whatever the shifted window holds, the page agrees with itself: its balances follow its own
+        // rows, the total counts what exists, and there is a next page only when rows remain.
+        Assert.Equal(6, second.TotalCount);
+        Assert.Equal(3, second.Items.Count);
+        Assert.False(second.HasMore);
+        Assert.Equal(first.Items[^1].RecordId, second.Items[0].RecordId);
+        Assert.Equal(first.Items[^1].RunningBalance, second.Items[0].RunningBalance);
+        Assert.Equal(3_000m, second.Items[0].RunningBalance);
+        Assert.Equal(1_000m, second.Items[^1].RunningBalance);
+    }
+
+    [Fact]
+    public async Task APagePastTheEnd_IsEmptyButStillCountsEveryMovement_AndANegativeSkipStartsAtTheTop()
+    {
+        await using var context = Context();
+        var cash = new FinanceAccount
+        {
+            Name = "Cash", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Cash, OpeningBalance = 100_000m, IsActive = true
+        };
+        context.FinanceAccounts.Add(cash);
+        await context.SaveChangesAsync();
+        var staff = new StaffCashService(context, new FinanceAccountService(context), TestAttachments.Writer());
+        var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Kamran" });
+        for (var i = 0; i < 3; i++)
+            await staff.RecordTransferAsync(holder.FinanceAccountId, new SaveStaffCashTransferDto
+            {
+                Type = StaffCashMovementType.FundsGiven, Amount = 1_000m,
+                Date = PakistanTime.Today.AddDays(-i), CounterpartyFinanceAccountId = cash.Id
+            }, 1);
+
+        var beyond = await staff.GetStatementAsync(holder.FinanceAccountId, 20, 20);
+        Assert.Empty(beyond.Items);
+        Assert.False(beyond.HasMore);
+        Assert.Equal(3, beyond.TotalCount);
+        Assert.Equal(3_000m, beyond.Holder.CurrentBalance);
+
+        var negative = await staff.GetStatementAsync(holder.FinanceAccountId, -4, 2);
+        var top = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 2);
+        Assert.Equal(
+            top.Items.Select(row => (row.RecordId, row.RunningBalance)),
+            negative.Items.Select(row => (row.RecordId, row.RunningBalance)));
+        Assert.True(negative.HasMore);
+        Assert.Equal(3_000m, negative.Items[0].RunningBalance);
+    }
+
+    [Fact]
+    public async Task APageThatStartsBetweenATransferAndAnExpenseSharingAnId_KeepsTheRightBalance()
+    {
+        await using var context = Context();
+        var cash = new FinanceAccount
+        {
+            Id = 1, Name = "Cash", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Cash, OpeningBalance = 100_000m, IsActive = true
+        };
+        var staffFloat = new FinanceAccount
+        {
+            Id = 2, Name = "Ahmad - Staff float", AccountHolderName = "Ahmad",
+            Type = FinanceAccountType.StaffFloat, OpeningBalance = 0m, IsActive = true
+        };
+        context.FinanceAccounts.AddRange(cash, staffFloat);
+        // Same id, same day, same instant: only the ledger's tie-breakers tell these two apart,
+        // and the boundary between page one and page two falls exactly between them.
+        var day = PakistanTime.Today.AddDays(-2);
+        var at = DateTime.UtcNow.AddDays(-2);
+        context.StaffCashTransfers.Add(new StaffCashTransfer
+        {
+            Id = 7, StaffFinanceAccountId = staffFloat.Id, CounterpartyFinanceAccountId = cash.Id,
+            Type = StaffCashMovementType.FundsGiven, Amount = 5_000m, Date = day, CreatedAt = at, UpdatedAt = at
+        });
+        context.Expenses.Add(new Expense
+        {
+            Id = 7, FinanceAccountId = staffFloat.Id, Category = "Fuel", Amount = 1_200m,
+            Date = day, CreatedAt = at
+        });
+        await context.SaveChangesAsync();
+        var staff = new StaffCashService(context, new FinanceAccountService(context), TestAttachments.Writer());
+
+        var whole = await staff.GetStatementAsync(staffFloat.Id, 0, 20);
+        var first = await staff.GetStatementAsync(staffFloat.Id, 0, 1);
+        var second = await staff.GetStatementAsync(staffFloat.Id, 1, 1);
+
+        Assert.Equal(
+            [("Expense", 7, 3_800m), ("Transfer", 7, 5_000m)],
+            whole.Items.Select(row => (row.RecordType, row.RecordId, row.RunningBalance)));
+        Assert.Equal(
+            whole.Items.Select(row => (row.RecordType, row.RecordId, row.RunningBalance)),
+            first.Items.Concat(second.Items).Select(row => (row.RecordType, row.RecordId, row.RunningBalance)));
+        Assert.True(first.HasMore);
+        Assert.False(second.HasMore);
+    }
+
+    [Theory]
+    [InlineData(-3, 500, 0, 200)]
+    [InlineData(40, 0, 40, 1)]
+    public async Task TheStatementRoute_ClampsSkipAndTake(int skip, int take, int expectedSkip, int expectedTake)
+    {
+        var service = new RecordingStaffCash();
+        var result = await new StaffCashController(service).Statement(9, skip, take);
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Equal((9, expectedSkip, expectedTake), service.Asked);
+    }
+
+    private sealed class RecordingStaffCash : IStaffCashService
+    {
+        public (int Id, int Skip, int Take) Asked { get; private set; }
+
+        public Task<StaffCashStatementDto> GetStatementAsync(
+            int staffFinanceAccountId, int skip, int take, CancellationToken cancellationToken = default)
+        {
+            Asked = (staffFinanceAccountId, skip, take);
+            return Task.FromResult(new StaffCashStatementDto());
+        }
+
+        public Task<StaffCashOverviewDto> GetOverviewAsync(bool includeSettled, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task<StaffCashHolderDto> CreateHolderAsync(CreateStaffCashHolderDto dto, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task<StaffCashHistoryItemDto> RecordTransferAsync(int staffFinanceAccountId, SaveStaffCashTransferDto dto, int? userId,
+            FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task<StaffCashHistoryItemDto> UpdateTransferAsync(int staffFinanceAccountId, int transferId, SaveStaffCashTransferDto dto,
+            int? userId, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task DeleteTransferAsync(int staffFinanceAccountId, int transferId, string concurrencyToken,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task<FinanceAttachmentDownload> GetTransferAttachmentAsync(int staffFinanceAccountId, int transferId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task RemoveTransferAttachmentAsync(int staffFinanceAccountId, int transferId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private static ExpenseCategory Category(int id, string name) => new()

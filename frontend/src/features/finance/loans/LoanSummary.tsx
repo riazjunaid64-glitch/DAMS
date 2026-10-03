@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { BottomSheet, Button, IconArrowDown, IconArrowUp, IconDownload, IconMore, IconPencil, StatusBadge } from "../../../components/ui";
+import { useState } from "react";
+import { BottomSheet, Button, IconArrowDown, IconArrowUp, IconDownload, IconMore, IconPencil, SheetAction, StatusBadge } from "../../../components/ui";
 import { loanLine, loanStatus, rupees } from "./rules.ts";
 import type { Loan } from "./types.ts";
 
@@ -21,22 +21,6 @@ function Figure({ label, value }: { label: string; value: number }) {
       <p className="m-0 text-caption font-bold uppercase tracking-[0.4px] text-ink-muted">{label}</p>
       <p className="m-0 mt-0.5 truncate text-section font-extrabold tabular-nums text-ink">{rupees(value)}</p>
     </div>
-  );
-}
-
-function SheetItem({ icon, label, disabled, onSelect }: { icon: ReactNode; label: string; disabled?: boolean; onSelect: () => void }) {
-  return (
-    <li>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onSelect}
-        className="flex h-12 w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-0 text-left text-body font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:text-ink-faint"
-      >
-        <span className="flex text-ink-2">{icon}</span>
-        {label}
-      </button>
-    </li>
   );
 }
 
@@ -93,9 +77,9 @@ export function LoanSummary({ loan, isPhone, canExport, exporting, onEdit, onRep
       {isPhone && (
         <BottomSheet open={sheetOpen} onClose={() => setSheetOpen(false)} title="More actions" footer={null}>
           <ul className="m-0 flex list-none flex-col p-0">
-            <SheetItem icon={<IconArrowUp size={18} />} label="Receive loan funds" disabled={!loan.isActive} onSelect={fromSheet(onReceive)} />
-            <SheetItem icon={<IconPencil size={18} />} label="Edit loan" onSelect={fromSheet(onEdit)} />
-            <SheetItem icon={<IconDownload size={18} />} label="Export activity" disabled={!canExport || exporting} onSelect={fromSheet(onExport)} />
+            <SheetAction icon={<IconArrowUp size={18} />} label="Receive loan funds" disabled={!loan.isActive} onSelect={fromSheet(onReceive)} />
+            <SheetAction icon={<IconPencil size={18} />} label="Edit loan" onSelect={fromSheet(onEdit)} />
+            <SheetAction icon={<IconDownload size={18} />} label="Export activity" disabled={!canExport || exporting} onSelect={fromSheet(onExport)} />
           </ul>
         </BottomSheet>
       )}
