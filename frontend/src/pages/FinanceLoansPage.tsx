@@ -18,8 +18,8 @@ import { useIdempotencyKeys } from "../lib/idempotency.ts";
 
 type Dialog =
   | { kind: "loan"; loan: Loan | null }
-  | { kind: "movement"; type: MovementType; movement: LoanTransaction | null }
-  | { kind: "delete"; movement: LoanTransaction };
+  | { kind: "movement"; loan: Loan; type: MovementType; movement: LoanTransaction | null }
+  | { kind: "delete"; loan: Loan; movement: LoanTransaction };
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All" },
@@ -50,12 +50,13 @@ export default function FinanceLoansPage({ user }: { user: User | null }) {
 
   // The open loan is read from the list, which is refetched after every save, so the loan on screen,
   // the loan its buttons act on and the row version an edit sends are the same row. With no loan in
-  // the address a desktop opens the first one; a phone shows the list.
+  // the address a desktop opens the first one; a phone shows the list. A popup keeps the loan it was
+  // opened for, so a reload that reorders the list can never point it at another loan.
   const requestedId = loanParam === undefined ? null : Number(loanParam);
   const selected = requestedId !== null
     ? data.loans.find((loan) => loan.id === requestedId) ?? null
     : isPhone ? null : data.loans[0] ?? null;
-  const activity = useLoanActivity(selected?.id ?? null);
+  const activity = useLoanActivity(selected?.id ?? null, isPhone ? "more" : "pages");
   const visible = useMemo(() => filterLoans(data.loans, search, status), [data.loans, search, status]);
   const phoneLoanPage = isPhone && requestedId !== null;
 
@@ -85,9 +86,8 @@ export default function FinanceLoansPage({ user }: { user: User | null }) {
     activity.reload();
   };
 
-  const openAttachment = (movement: LoanTransaction, download: boolean) => {
-    if (!selected) return;
-    loansApi.openAttachment(selected.id, movement, download).catch((failure: unknown) => {
+  const openAttachment = (loan: Loan, movement: LoanTransaction, download: boolean) => {
+    loansApi.openAttachment(loan.id, movement, download).catch((failure: unknown) => {
       toast.error(failure instanceof Error ? failure.message : "The attachment could not be opened.");
     });
   };
@@ -104,11 +104,10 @@ export default function FinanceLoansPage({ user }: { user: User | null }) {
     }
   };
 
-  const deleteMovement = async (movement: LoanTransaction) => {
-    if (!selected) return;
+  const deleteMovement = async (loan: Loan, movement: LoanTransaction) => {
     setDeleting(true);
     try {
-      await loansApi.deleteMovement(selected.id, movement);
+      await loansApi.deleteMovement(loan.id, movement);
       toast.success(movement.type === "Drawdown" ? "Loan funds deleted." : "Repayment deleted.");
       afterMovement();
     } catch (failure) {
@@ -159,8 +158,8 @@ export default function FinanceLoansPage({ user }: { user: User | null }) {
         canExport={activity.total > 0}
         exporting={exporting}
         onEdit={() => setDialog({ kind: "loan", loan: selected })}
-        onRepay={() => setDialog({ kind: "movement", type: "Repayment", movement: null })}
-        onReceive={() => setDialog({ kind: "movement", type: "Drawdown", movement: null })}
+        onRepay={() => setDialog({ kind: "movement", loan: selected, type: "Repayment", movement: null })}
+        onReceive={() => setDialog({ kind: "movement", loan: selected, type: "Drawdown", movement: null })}
         onExport={() => void exportActivity()}
       />
       <LoanActivity
@@ -168,9 +167,9 @@ export default function FinanceLoansPage({ user }: { user: User | null }) {
         isPhone={isPhone}
         exporting={exporting}
         onExport={() => void exportActivity()}
-        onCorrect={(movement) => setDialog({ kind: "movement", type: movement.type, movement })}
-        onDelete={(movement) => setDialog({ kind: "delete", movement })}
-        onOpenAttachment={openAttachment}
+        onCorrect={(movement) => setDialog({ kind: "movement", loan: selected, type: movement.type, movement })}
+        onDelete={(movement) => setDialog({ kind: "delete", loan: selected, movement })}
+        onOpenAttachment={(movement, download) => openAttachment(selected, movement, download)}
       />
     </>
   ) : missing ? (
@@ -212,14 +211,16 @@ export default function FinanceLoansPage({ user }: { user: User | null }) {
           onClose={close}
           onSaved={(saved) => {
             data.reload();
-            if (saved.id !== selected?.id) open(saved);
+            // Pin the saved loan in the address: a rename or a status change can move it in the
+            // list, and the open loan must not silently become whichever loan is now first.
+            if (saved.id !== requestedId) open(saved);
           }}
         />
       )}
-      {dialog?.kind === "movement" && selected && (
+      {dialog?.kind === "movement" && (
         <MovementDialog
           key={dialog.movement?.id ?? dialog.type}
-          loan={selected}
+          loan={dialog.loan}
           movement={dialog.movement}
           type={dialog.type}
           cashAccounts={data.cashAccounts}
@@ -227,14 +228,14 @@ export default function FinanceLoansPage({ user }: { user: User | null }) {
           keys={keys}
           onClose={close}
           onSaved={afterMovement}
-          onOpenAttachment={openAttachment}
+          onOpenAttachment={(movement, download) => openAttachment(dialog.loan, movement, download)}
         />
       )}
       {dialog?.kind === "delete" && (
         <ConfirmDialog
           open
           onClose={() => !deleting && close()}
-          onConfirm={() => void deleteMovement(dialog.movement)}
+          onConfirm={() => void deleteMovement(dialog.loan, dialog.movement)}
           title={dialog.movement.type === "Drawdown" ? "Delete these loan funds?" : "Delete this repayment?"}
           message="The loan and bank balances will be worked out again."
           confirmLabel="Delete"

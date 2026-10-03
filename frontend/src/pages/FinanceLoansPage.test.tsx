@@ -81,14 +81,34 @@ function show(path = "/finance/loans", user: User | null = admin) {
   );
 }
 
+let phoneWidth = false;
+const mediaListeners = new Set<() => void>();
+
 function stubMedia(phone: boolean) {
+  phoneWidth = phone;
+  mediaListeners.clear();
   vi.stubGlobal("matchMedia", (query: string) => ({
-    matches: phone && query === PHONE_QUERY,
+    get matches() { return phoneWidth && query === PHONE_QUERY; },
     media: query,
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (_: string, listener: () => void) => mediaListeners.add(listener),
+    removeEventListener: (_: string, listener: () => void) => mediaListeners.delete(listener),
   }));
 }
+
+/** The window is resized across the phone width while the page is open. */
+function resize(phone: boolean) {
+  act(() => {
+    phoneWidth = phone;
+    mediaListeners.forEach((listener) => listener());
+  });
+}
+
+/** `count` distinct movements starting at `skip`, newest first, as the server pages them. */
+const movementsFrom = (skip: number, count: number) => Array.from({ length: count }, (_, index) => movement({
+  id: 1000 + skip + index,
+  reference: `REF-${skip + index + 1}`,
+  date: `2026-09-${String(28 - ((skip + index) % 28)).padStart(2, "0")}T00:00:00`,
+}));
 
 const dialog = () => within(screen.getByRole("dialog"));
 const button = (name: string | RegExp, scope: { getByRole: typeof screen.getByRole } = screen) => scope.getByRole("button", { name }) as HTMLButtonElement;
@@ -266,17 +286,37 @@ describe("Loans: adding and editing a loan", () => {
     expect(api.loans).toHaveBeenCalledTimes(2);
   });
 
-  it("edits the open loan and sends its row version back", async () => {
+  it("keeps the edited loan open when the rename moves it down the list", async () => {
+    // The server lists active loans first, then by name: renaming "Bank Alfalah loan" to "Zarai Bank
+    // loan" puts "Car finance" first. The open loan must stay the one that was edited.
+    const car = loan({ id: 3, name: "Car finance", lenderName: "Meezan Bank", financeAccountId: 32, financeAccountName: "Car finance", concurrencyToken: "car-tok" });
+    const renamed = loan({ name: "Zarai Bank loan", concurrencyToken: "loan-tok-2" });
+    api.loans.mockResolvedValueOnce([alfalah, car, director]).mockResolvedValue([car, renamed, director]);
+    api.saveLoan.mockResolvedValue(renamed);
     show();
     await loaded();
     fireEvent.click(button("Edit loan"));
     expect(dialog().getByText("Edit loan")).toBeTruthy();
-    expect((dialog().getByRole("textbox", { name: /Loan name/ }) as HTMLInputElement).value).toBe("Bank Alfalah loan");
-    fireEvent.click(dialog().getByRole("switch"));
+    const name = dialog().getByRole("textbox", { name: /Loan name/ }) as HTMLInputElement;
+    expect(name.value).toBe("Bank Alfalah loan");
+    type(name, "Zarai Bank loan");
     fireEvent.click(footerButton("Save loan"));
     await waitFor(() => expect(api.saveLoan).toHaveBeenCalledWith(
-      { name: "Bank Alfalah loan", lenderName: "Bank Alfalah", financeAccountId: 30, isActive: false, concurrencyToken: "loan-tok" }, 1));
-    expect(where()).toBe("/finance/loans");
+      { name: "Zarai Bank loan", lenderName: "Bank Alfalah", financeAccountId: 30, isActive: true, concurrencyToken: "loan-tok" }, 1));
+    expect(await screen.findByRole("heading", { name: "Zarai Bank loan" })).toBeTruthy();
+    expect(where()).toBe("/finance/loans/1");
+    expect(screen.queryByRole("heading", { name: "Car finance" })).toBeNull();
+    expect(button(/^Car finance/).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("offers the loan accounts that arrived even when the loans did not", async () => {
+    api.loans.mockRejectedValue(new Error("Loans could not be loaded."));
+    show();
+    expect(await screen.findByText("Loans could not be loaded.")).toBeTruthy();
+    fireEvent.click(button("Add loan"));
+    fireEvent.click(dialog().getByRole("combobox", { name: /Loan liability account/ }));
+    expect(screen.getByRole("option", { name: "Car finance · Seven Ventures" })).toBeTruthy();
+    expect(dialog().queryByText("Add a Liability account in Manage accounts first.")).toBeNull();
   });
 });
 
@@ -435,5 +475,44 @@ describe("Loans on a phone", () => {
     expect(api.statement).toHaveBeenLastCalledWith(1, 1, 20, expect.any(AbortSignal));
     // Appended under the first card, not in place of it.
     expect(document.querySelectorAll("ul > li")).toHaveLength(2);
+  });
+});
+
+describe("Loans: resizing across the phone width", () => {
+  const long = loan({ transactionCount: 45 });
+  beforeEach(() => {
+    api.loans.mockResolvedValue([long, director]);
+    api.statement.mockImplementation(async (_id, skip, take) => statementOf(long, movementsFrom(skip, Math.min(take, 45 - skip)), skip + take < 45));
+  });
+
+  it("starts the desktop at page 1 after a phone loaded more", async () => {
+    stubMedia(true);
+    show("/finance/loans/1");
+    await screen.findAllByText(/REF-20$/);
+    fireEvent.click(button("Load more"));
+    await screen.findAllByText(/REF-40$/);
+
+    resize(false);
+    await waitFor(() => expect(api.statement).toHaveBeenLastCalledWith(1, 0, 20, expect.any(AbortSignal)));
+    await waitFor(() => expect(screen.getByText(/Showing/).textContent).toBe("Showing 1–20 of 45 entries"));
+    // The table holds exactly the first page: the heading row plus 20 movements.
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(21);
+    expect(screen.queryAllByText(/REF-21$/)).toHaveLength(0);
+  });
+
+  it("starts the phone from the newest movement after the desktop was on page 3", async () => {
+    show("/finance/loans/1");
+    await screen.findAllByText(/REF-1$/);
+    fireEvent.click(button("Page 3"));
+    await screen.findAllByText(/REF-41$/);
+
+    resize(true);
+    await waitFor(() => expect(api.statement).toHaveBeenLastCalledWith(1, 0, 20, expect.any(AbortSignal)));
+    await screen.findAllByText(/REF-1$/);
+    expect(screen.queryAllByText(/REF-41$/)).toHaveLength(0);
+    fireEvent.click(button("Load more"));
+    await waitFor(() => expect(api.statement).toHaveBeenLastCalledWith(1, 20, 20, expect.any(AbortSignal)));
+    await screen.findAllByText(/REF-21$/);
+    expect(document.querySelectorAll("ul > li")).toHaveLength(40);
   });
 });

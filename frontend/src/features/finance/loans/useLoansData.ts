@@ -23,16 +23,13 @@ export function useLoansData(enabled: boolean) {
     const { signal } = controller;
     void Promise.allSettled([loansApi.loans(signal), loansApi.loanAccounts(signal), loansApi.cashAccounts(signal)]).then(([loans, loanAccounts, cash]) => {
       if (signal.aborted) return;
-      if (loans.status === "fulfilled") {
-        setData((current) => ({
-          loans: loans.value,
-          loanAccounts: loanAccounts.status === "fulfilled" ? loanAccounts.value : current.loanAccounts,
-          cashAccounts: cash.status === "fulfilled" ? cash.value : current.cashAccounts,
-        }));
-        setError(null);
-      } else {
-        setError(loans.reason instanceof Error ? loans.reason.message : "Loans could not be loaded.");
-      }
+      // Each answer is kept on its own: accounts that arrived are used even when the loans did not.
+      setData((current) => ({
+        loans: loans.status === "fulfilled" ? loans.value : current.loans,
+        loanAccounts: loanAccounts.status === "fulfilled" ? loanAccounts.value : current.loanAccounts,
+        cashAccounts: cash.status === "fulfilled" ? cash.value : current.cashAccounts,
+      }));
+      setError(loans.status === "rejected" ? (loans.reason instanceof Error ? loans.reason.message : "Loans could not be loaded.") : null);
       setLoanAccountsError(loanAccounts.status === "rejected" ? "The loan accounts could not be loaded." : null);
       setCashAccountsError(cash.status === "rejected" ? "The cash and bank accounts could not be loaded." : null);
       setLoading(false);
