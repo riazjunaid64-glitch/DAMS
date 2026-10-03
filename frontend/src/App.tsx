@@ -214,6 +214,7 @@ function App() {
             <Route path="/finance/reports" element={<FinanceReportsPage user={user} />} />
             <Route path="/finance/partners" element={<FinancePartnersPage user={user} />} />
             <Route path="/finance/loans" element={<FinanceLoansPage user={user} />} />
+            <Route path="/finance/loans/:loanId" element={<FinanceLoansPage user={user} />} />
             <Route path="/finance/staff-cash" element={<StaffCashPage user={user} />} />
             <Route path="/finance/commissions-rebates" element={<CommissionRebatesPage user={user} />} />
             <Route path="/crm" element={<LeadsPage user={user} />} />

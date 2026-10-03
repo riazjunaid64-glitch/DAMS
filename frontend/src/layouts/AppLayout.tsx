@@ -50,6 +50,9 @@ export default function AppLayout({ user, navGroups, displayName, setModal, onLo
     ...(section ? [{ label: section.label, to: innerPage || trail.length > 0 ? section.to : undefined }] : []),
     ...trail,
   ];
+  // A page several steps under its menu section ("Loans / Bank Alfalah loan") goes back one step on
+  // a phone, to the linked step before it, rather than all the way to the section.
+  const parentStep = trail.length > 1 ? trail[trail.length - 2] : undefined;
 
   const logo = (
     <Link to={home} aria-label={`${SITE_CONTACT.brandName} home`} className="flex items-center">
@@ -83,7 +86,7 @@ export default function AppLayout({ user, navGroups, displayName, setModal, onLo
         />
         <PhoneTopBar
           logo={logo}
-          back={innerPage && section ? { to: section.to, label: section.label } : undefined}
+          back={parentStep?.to ? { to: parentStep.to, label: parentStep.label } : innerPage && section ? { to: section.to, label: section.label } : undefined}
           actions={!isPhone ? null : bell ?? <Button size="sm" variant="outline" onClick={() => setModal("login")}>Log in</Button>}
         />
 
