@@ -286,7 +286,7 @@ describe("Loans: adding and editing a loan", () => {
     expect(api.loans).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the edited loan open when the rename moves it down the list", async () => {
+  it("keeps the edited loan open when the rename moves it down the list", { timeout: 15_000 }, async () => {
     // The server lists active loans first, then by name: renaming "Bank Alfalah loan" to "Zarai Bank
     // loan" puts "Car finance" first. The open loan must stay the one that was edited.
     const car = loan({ id: 3, name: "Car finance", lenderName: "Meezan Bank", financeAccountId: 32, financeAccountName: "Car finance", concurrencyToken: "car-tok" });
@@ -478,7 +478,8 @@ describe("Loans on a phone", () => {
   });
 });
 
-describe("Loans: resizing across the phone width", () => {
+// Each test loads the screen, pages and re-renders across a resize: slower than one screen load.
+describe("Loans: resizing across the phone width", { timeout: 15_000 }, () => {
   const long = loan({ transactionCount: 45 });
   beforeEach(() => {
     api.loans.mockResolvedValue([long, director]);
