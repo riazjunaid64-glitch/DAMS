@@ -6,7 +6,6 @@ import {
   IconArrowDown,
   IconArrowUp,
   IconDownload,
-  IconPaperclip,
   LoadMore,
   Notice,
   Pagination,
@@ -14,6 +13,7 @@ import {
   type ActionItem,
   type DataTableColumn,
 } from "../../../components/ui";
+import { AttachedFile } from "../AttachedFile.tsx";
 import { figure, moneyIn, movementDate, movementDetail, movementTitle, rupees, signedCash, signedFigure, signedPrincipal } from "./rules.ts";
 import type { LoanTransaction } from "./types.ts";
 
@@ -69,31 +69,6 @@ function rowActions(row: LoanTransaction, props: Props, withAttachment: boolean)
   return items;
 }
 
-function Attachment({ row, onOpen }: { row: LoanTransaction; onOpen: Props["onOpenAttachment"] }) {
-  if (!row.attachment) return <span className="text-small text-ink-faint">None</span>;
-  return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-      <button
-        type="button"
-        onClick={() => onOpen(row, false)}
-        title={row.attachment.fileName}
-        className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-full border border-gold-line bg-gold-soft px-2.5 text-label font-bold text-gold-text focus-visible:outline-2 focus-visible:outline-primary"
-      >
-        <IconPaperclip size={12} />
-        Attached
-      </button>
-      <button
-        type="button"
-        aria-label={`Download ${row.attachment.fileName}`}
-        onClick={() => onOpen(row, true)}
-        className="flex size-8 cursor-pointer items-center justify-center rounded-lg border-0 bg-transparent text-ink-2 hover:bg-page focus-visible:outline-2 focus-visible:outline-primary"
-      >
-        <IconDownload size={14} />
-      </button>
-    </span>
-  );
-}
-
 function PhoneFigure({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="min-w-0">
@@ -131,7 +106,7 @@ export function LoanActivity(props: Props) {
     { key: "interest", header: "Interest (Rs)", align: "right", render: (row) => <Interest value={row.interestAmount} /> },
     { key: "cash", header: "Cash impact (Rs)", align: "right", render: (row) => <Signed value={signedCash(row)} /> },
     { key: "outstanding", header: "Outstanding (Rs)", align: "right", render: (row) => <span className="whitespace-nowrap font-extrabold tabular-nums">{figure(row.runningBalance)}</span> },
-    { key: "attachment", header: "Attachment", render: (row) => <Attachment row={row} onOpen={onOpenAttachment} /> },
+    { key: "attachment", header: "Attachment", render: (row) => <AttachedFile attachment={row.attachment} onOpen={(download) => onOpenAttachment(row, download)} /> },
     {
       key: "actions",
       header: <span className="sr-only">Actions</span>,

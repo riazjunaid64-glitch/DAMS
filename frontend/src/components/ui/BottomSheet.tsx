@@ -28,3 +28,22 @@ export function BottomSheet({ onApply, onReset, applyLabel = "Apply", resetLabel
     />
   );
 }
+
+export type SheetActionProps = { icon: ReactNode; label: ReactNode; disabled?: boolean; onSelect: () => void };
+
+/** One row of a phone "More actions" sheet: icon and label, the whole row is the tap target. Put the rows in a `<ul>`. */
+export function SheetAction({ icon, label, disabled, onSelect }: SheetActionProps) {
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onSelect}
+        className="flex h-12 w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-0 text-left text-body font-extrabold text-ink focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:text-ink-faint"
+      >
+        <span className="flex text-ink-2">{icon}</span>
+        {label}
+      </button>
+    </li>
+  );
+}

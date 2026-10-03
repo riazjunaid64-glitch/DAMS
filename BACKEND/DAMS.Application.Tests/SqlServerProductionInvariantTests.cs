@@ -1649,6 +1649,76 @@ public sealed class SqlServerProductionInvariantTests
         return value is null or DBNull ? default! : (T)value;
     }
 
+    /// <summary>
+    /// The statement pages by offset over a UNION of transfers and expenses, and each page's first
+    /// balance is a tie-broken sum over that union; the aging is hand-written T-SQL. In memory all of
+    /// it is evaluated in C#, so only this run proves SQL Server translates and agrees with it.
+    /// </summary>
+    [SqlServerFact]
+    public async Task StaffCashStatementPagesAndAging_RunOnTheRealSqlServerProvider()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+        var cash = new FinanceAccount
+        {
+            Name = "SQL Staff Cash", AccountHolderName = "DAMS", Type = FinanceAccountType.Cash,
+            OpeningBalance = 100_000m, IsActive = true
+        };
+        var category = new ExpenseCategory
+        {
+            Name = "SQL site expense", Code = "sql-site-expense", IsActive = true, IsWhtApplicable = false, DisplayOrder = 10
+        };
+        db.AddRange(cash, category);
+        await db.SaveChangesAsync();
+        var accounts = new FinanceAccountService(db);
+        var staff = new StaffCashService(db, accounts, TestAttachments.Writer());
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+        var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "SQL Bilal" });
+        var start = new DateTime(2026, 9, 1);
+        // Fresh tables number from 1, so transfers and expenses share ids here and the type tie-break is live.
+        for (var i = 0; i < 6; i++)
+        {
+            await staff.RecordTransferAsync(holder.FinanceAccountId, new SaveStaffCashTransferDto
+            {
+                Type = StaffCashMovementType.FundsGiven, Amount = 1_000m,
+                Date = start.AddDays(i * 2), CounterpartyFinanceAccountId = cash.Id
+            }, 1);
+            await finance.CreateExpenseAsync(new CreateExpenseDto
+            {
+                FinanceAccountId = holder.FinanceAccountId, CategoryId = category.Id,
+                Amount = 400m, Date = start.AddDays(i * 2 + 1)
+            }, 1);
+        }
+
+        var whole = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 200);
+        Assert.Equal(12, whole.TotalCount);
+        Assert.Equal(12, whole.Items.Count);
+        Assert.False(whole.HasMore);
+        Assert.Equal(3_600m, whole.Holder.CurrentBalance);
+        Assert.Equal(start, whole.Holder.OutstandingSince);
+        Assert.Equal(whole.Holder.CurrentBalance, whole.Items[0].RunningBalance);
+
+        var pages = new[]
+        {
+            await staff.GetStatementAsync(holder.FinanceAccountId, 0, 5),
+            await staff.GetStatementAsync(holder.FinanceAccountId, 5, 5),
+            await staff.GetStatementAsync(holder.FinanceAccountId, 10, 5)
+        };
+        Assert.Equal([true, true, false], pages.Select(page => page.HasMore));
+        Assert.All(pages, page => Assert.Equal(12, page.TotalCount));
+        Assert.Equal(
+            whole.Items.Select(row => (row.RecordType, row.RecordId, row.RunningBalance)),
+            pages.SelectMany(page => page.Items).Select(row => (row.RecordType, row.RecordId, row.RunningBalance)));
+        Assert.Empty((await staff.GetStatementAsync(holder.FinanceAccountId, 40, 20)).Items);
+
+        var overview = await staff.GetOverviewAsync(true);
+        Assert.Equal(3_600m, overview.TotalHeldByStaff);
+        Assert.Equal(start, Assert.Single(overview.Holders).OutstandingSince);
+    }
+
     [SqlServerFact]
     public async Task LoanQueriesCorrectionsAndReports_RunOnTheRealSqlServerProvider()
     {

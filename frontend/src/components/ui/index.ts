@@ -70,6 +70,6 @@ export { PhotoGallery, type PhotoGalleryProps } from "./PhotoGallery.tsx";
 // 14 App layout + phone pieces
 export { Sidebar, TopBar, PhoneTopBar, BottomNav, type Crumb, type ShellUser, type SidebarProps, type PhoneTopBarProps } from "./AppShell.tsx";
 export { PageHeader, type PageHeaderProps } from "./PageHeader.tsx";
-export { BottomSheet, type BottomSheetProps } from "./BottomSheet.tsx";
+export { BottomSheet, SheetAction, type BottomSheetProps, type SheetActionProps } from "./BottomSheet.tsx";
 export { Avatar } from "./Avatar.tsx";
 export { isNavActive, activeNavItem, type NavGroup, type NavItem } from "./navigation.ts";

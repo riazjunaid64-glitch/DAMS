@@ -65,7 +65,9 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public StaffCashHolderDto Holder { get; set; } = new();
         public List<StaffCashHistoryItemDto> Items { get; set; } = [];
         public bool HasMore { get; set; }
-        public string? NextCursor { get; set; }
+
+        /// <summary>Every movement on this float, so the page can number its pages.</summary>
+        public int TotalCount { get; set; }
     }
 
     public sealed class StaffCashHistoryItemDto
