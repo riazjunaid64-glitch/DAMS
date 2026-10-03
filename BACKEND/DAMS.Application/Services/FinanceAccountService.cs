@@ -727,9 +727,9 @@ namespace DAMS.Application.Services
                 BankOrWalletName = Clean(dto.BankOrWalletName), Description = Clean(dto.Description),
                 IsActive = true, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
             };
-            _context.FinanceAccounts.Add(account);
             if (account.OpeningBalance == 0m)
             {
+                _context.FinanceAccounts.Add(account);
                 await _context.SaveChangesAsync(cancellationToken);
                 return await GetByIdAsync(account.Id, cancellationToken);
             }
@@ -737,13 +737,37 @@ namespace DAMS.Application.Services
             // A non-zero opening on a new account moves every report from the go-live date, so its
             // 0 -> figure leaves the same history row an edit would. The id only exists after the
             // insert, so both writes share one transaction and neither can be left without the other.
-            await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            var id = await InsertWithOpeningHistoryAsync(account, cancellationToken);
+            return await GetByIdAsync(id, cancellationToken);
+        }
+
+        /// <summary>
+        /// Inserts the account and its "Created" history row as one unit that is safe to replay.
+        /// <para>
+        /// The database retries a failed transaction by running the whole block again, but the context
+        /// remembers the first attempt: a rolled-back insert leaves the account tracked as saved, with
+        /// an id that no longer exists. So every attempt first puts the tracker back to "not inserted
+        /// yet", and a commit whose answer was lost is recognised by looking for the committed pair
+        /// instead of inserting a second one.
+        /// </para>
+        /// </summary>
+        private async Task<int> InsertWithOpeningHistoryAsync(FinanceAccount account, CancellationToken cancellationToken)
+        {
+            FinanceRecordAudit? history = null;
+
+            async Task<int> Attempt(CancellationToken ct)
             {
-                await using var transaction = _context.Database.IsRelational() && _context.Database.CurrentTransaction == null
-                    ? await _context.Database.BeginTransactionAsync(cancellationToken)
-                    : null;
-                await _context.SaveChangesAsync(cancellationToken);
-                _context.FinanceRecordAudits.Add(new FinanceRecordAudit
+                if (history != null) _context.Entry(history).State = EntityState.Detached;
+                var tracked = _context.Entry(account);
+                if (tracked.State != EntityState.Added)
+                {
+                    tracked.State = EntityState.Detached;
+                    account.Id = 0;
+                    account.RowVersion = [];
+                    _context.FinanceAccounts.Add(account);
+                }
+                await _context.SaveChangesAsync(ct);
+                history = new FinanceRecordAudit
                 {
                     RecordType = nameof(FinanceAccount),
                     RecordId = account.Id,
@@ -758,11 +782,30 @@ namespace DAMS.Application.Services
                     }),
                     ActorUserId = _context.ActorUserId,
                     OccurredAt = DateTime.UtcNow
-                });
-                await _context.SaveChangesAsync(cancellationToken);
-                if (transaction != null) await transaction.CommitAsync(cancellationToken);
-            });
-            return await GetByIdAsync(account.Id, cancellationToken);
+                };
+                _context.FinanceRecordAudits.Add(history);
+                await _context.SaveChangesAsync(ct);
+                return account.Id;
+            }
+
+            // The name is unique, so it finds the account whatever id this context last saw.
+            Task<int> CommittedId(CancellationToken ct) => _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.Name == account.Name).Select(a => a.Id).SingleAsync(ct);
+
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return await Attempt(cancellationToken);
+
+            await _context.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+                Attempt,
+                async ct =>
+                {
+                    var existing = await _context.FinanceAccounts.AsNoTracking()
+                        .Where(a => a.Name == account.Name).Select(a => (int?)a.Id).SingleOrDefaultAsync(ct);
+                    return existing.HasValue && await _context.FinanceRecordAudits.AsNoTracking().AnyAsync(a =>
+                        a.RecordType == nameof(FinanceAccount) && a.Action == "Created" && a.RecordId == existing.Value, ct);
+                },
+                cancellationToken);
+            return await CommittedId(cancellationToken);
         }
 
         public async Task<FinanceAccountResponseDto> UpdateAsync(int id, UpdateFinanceAccountDto dto, CancellationToken cancellationToken = default)
@@ -1712,6 +1755,9 @@ namespace DAMS.Application.Services
             if (dto.LedgerCode?.Trim().Length > 30) throw new InvalidOperationException("Ledger code cannot exceed 30 characters.");
             if (string.IsNullOrWhiteSpace(dto.AccountHolderName)) throw new InvalidOperationException("Account holder name is required.");
             if (dto.AccountHolderName.Trim().Length > 150) throw new InvalidOperationException("Account holder name cannot exceed 150 characters.");
+            // Stored as decimal(18,2): round once, here, so every comparison, check and history row sees
+            // the figure that is actually saved.
+            dto.OpeningBalance = Math.Round(dto.OpeningBalance, 2, MidpointRounding.AwayFromZero);
             if (Math.Abs(dto.OpeningBalance) > 999_999_999_999_999.99m) throw new InvalidOperationException("Opening balance is outside the supported range.");
             if (dto.BankOrWalletName?.Trim().Length > 150) throw new InvalidOperationException("Bank or wallet name cannot exceed 150 characters.");
             if (dto.Description?.Trim().Length > 1000) throw new InvalidOperationException("Description cannot exceed 1000 characters.");

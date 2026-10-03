@@ -228,6 +228,44 @@ public sealed class FinanceAccountOpeningBalanceTests
         Assert.Equal(["A", "B"], page.Overview.HolderNames);
     }
 
+    [Theory]
+    [InlineData("123.456", "123.46")]
+    [InlineData("123.455", "123.46")]
+    [InlineData("-0.005", "-0.01")]
+    [InlineData("10.004", "10.00")]
+    public async Task AnOpeningBalance_IsRoundedToTwoDecimals_AwayFromZero_AndTheHistoryRecordsWhatWasSaved(string typed, string saved)
+    {
+        await using var context = Context();
+        var service = new FinanceAccountService(context);
+        var figure = decimal.Parse(typed, System.Globalization.CultureInfo.InvariantCulture);
+        var expected = decimal.Parse(saved, System.Globalization.CultureInfo.InvariantCulture);
+
+        var created = await service.CreateAsync(Form("Rounded", FinanceAccountType.Bank, figure));
+        Assert.Equal(expected, (await context.FinanceAccounts.AsNoTracking().SingleAsync(a => a.Id == created.Id)).OpeningBalance);
+        var creation = Assert.Single(await Trail(context, created.Id));
+        Assert.Contains($"\"to\":\"{expected.ToString("0.00###", System.Globalization.CultureInfo.InvariantCulture)}\"", creation.Changes);
+
+        var body = Update(created, 777.771m);
+        var updated = await service.UpdateAsync(created.Id, body);
+        Assert.Equal(777.77m, updated.OpeningBalance);
+        Assert.Equal(777.77m, (await context.FinanceAccounts.AsNoTracking().SingleAsync(a => a.Id == created.Id)).OpeningBalance);
+        var change = Assert.Single((await Trail(context, created.Id)).Where(a => a.Action == "Updated"));
+        Assert.Contains("\"to\":\"777.77\"", change.Changes);
+        Assert.DoesNotContain("777.771", change.Changes);
+    }
+
+    [Fact]
+    public async Task AnOpeningBalance_ThatRoundsToTheCurrentOne_IsNotAChange()
+    {
+        await using var context = Context();
+        var service = new FinanceAccountService(context);
+        var created = await service.CreateAsync(Form("Steady", FinanceAccountType.Bank, 500m));
+
+        await service.UpdateAsync(created.Id, Update(created, 500.004m));
+
+        Assert.DoesNotContain(await Trail(context, created.Id), a => a.Action == "Updated");
+    }
+
     [Fact]
     public async Task AnOpeningBalance_BeyondTheSupportedRange_IsRefused()
     {

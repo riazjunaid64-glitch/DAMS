@@ -29,6 +29,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -5491,6 +5492,110 @@ public sealed class SqlServerProductionInvariantTests
                 }, "admin"));
             Assert.Contains("1 expenses", error.Message);
             Assert.Contains("25 Jul 2026", error.Message);
+        }
+    }
+
+    /// <summary>
+    /// A new account with an opening balance is an account plus its "Created" history row, written in one
+    /// retried transaction. A transient failure after the account insert, before the commit, or after a
+    /// commit whose answer is lost must still end with exactly one account and one history row that
+    /// points at it — never none, a duplicate, or an orphan row.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ANewAccountWithAnOpening_IsExactlyOneAccountAndOneHistoryRow_WhateverTransientFaultHitsTheRetry()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var migrate = new AppDbContext(Options(database.ConnectionString)))
+            await migrate.Database.MigrateAsync();
+
+        var faults = new InjectedFaults();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlServer(database.ConnectionString, sql => sql.ExecutionStrategy(dependencies => new FaultTolerantStrategy(dependencies)))
+            .AddInterceptors(faults.Commands, faults.Transactions)
+            .Options;
+
+        foreach (var fault in new[] { "audit-insert", "before-commit", "after-commit" })
+        {
+            var name = $"Retry account {fault}";
+            await using var db = new AppDbContext(options);
+            db.ActorUserId = 7;
+            faults.Armed = fault;
+
+            var created = await new FinanceAccountService(db).CreateAsync(new CreateFinanceAccountDto
+            {
+                Name = name, Type = FinanceAccountType.Bank, AccountHolderName = "DAMS", OpeningBalance = 12_345.67m
+            });
+
+            Assert.Null(faults.Armed);   // the fault really fired
+            var connection = database.ConnectionString;
+            Assert.Equal(1, await ScalarAsync(connection, $"SELECT COUNT(*) FROM [FinanceAccounts] WHERE [Name] = N'{name}'"));
+            Assert.Equal(created.Id, await ScalarAsync(connection, $"SELECT [Id] FROM [FinanceAccounts] WHERE [Name] = N'{name}'"));
+            Assert.Equal(1, await ScalarAsync(connection, $"SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'FinanceAccount' AND [Action] = 'Created' AND [RecordId] = {created.Id}"));
+            Assert.Equal(12_345.67m, created.OpeningBalance);
+        }
+
+        // No history row exists for an account that is not there.
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [FinanceRecordAudits] a WHERE a.[RecordType] = 'FinanceAccount' AND a.[Action] = 'Created' AND NOT EXISTS (SELECT 1 FROM [FinanceAccounts] f WHERE f.[Id] = a.[RecordId])"));
+        Assert.Equal(3, await ScalarAsync(database.ConnectionString, "SELECT COUNT(*) FROM [FinanceRecordAudits] WHERE [RecordType] = 'FinanceAccount' AND [Action] = 'Created'"));
+    }
+
+    private sealed class InjectedTransientFault : Exception { }
+
+    private sealed class FaultTolerantStrategy(ExecutionStrategyDependencies dependencies)
+        : ExecutionStrategy(dependencies, 3, TimeSpan.FromMilliseconds(5))
+    {
+        protected override bool ShouldRetryOn(Exception exception) => exception is InjectedTransientFault;
+    }
+
+    /// <summary>Throws one transient fault, once, at the named point of the next write.</summary>
+    private sealed class InjectedFaults
+    {
+        public string? Armed { get; set; }
+        public DbCommandInterceptor Commands { get; }
+        public DbTransactionInterceptor Transactions { get; }
+
+        public InjectedFaults()
+        {
+            Commands = new AuditInsertFault(this);
+            Transactions = new CommitFault(this);
+        }
+
+        private bool Fire(string point)
+        {
+            if (Armed != point) return false;
+            Armed = null;
+            return true;
+        }
+
+        private sealed class AuditInsertFault(InjectedFaults owner) : DbCommandInterceptor
+        {
+            public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+                DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken)
+            {
+                if (command.CommandText.Contains("INSERT INTO [FinanceRecordAudits]") && owner.Fire("audit-insert"))
+                    throw new InjectedTransientFault();
+                return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+            }
+        }
+
+        private sealed class CommitFault(InjectedFaults owner) : DbTransactionInterceptor
+        {
+            public override ValueTask<InterceptionResult> TransactionCommittingAsync(
+                DbTransaction transaction, TransactionEventData eventData, InterceptionResult result, CancellationToken cancellationToken)
+            {
+                if (owner.Fire("before-commit")) throw new InjectedTransientFault();
+                return base.TransactionCommittingAsync(transaction, eventData, result, cancellationToken);
+            }
+
+            public override Task TransactionCommittedAsync(
+                DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+            {
+                // The commit has happened; the caller is told it failed, as when the connection drops
+                // before the answer arrives.
+                if (owner.Fire("after-commit")) throw new InjectedTransientFault();
+                return base.TransactionCommittedAsync(transaction, eventData, cancellationToken);
+            }
         }
     }
 
