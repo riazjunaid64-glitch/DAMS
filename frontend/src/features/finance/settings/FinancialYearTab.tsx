@@ -21,8 +21,8 @@ export function FinancialYearTab({ settings, reloading, checking, onCheck, onSav
   return (
     <div className="grid items-start gap-4 md:grid-cols-2 md:gap-5">
       {/* Not keyed by the version: Mark as checked and Clear check save the same settings row, and a new
-          version must not throw away a month or go-live date typed here but not saved yet. After its own
-          save the card already holds what was saved, and it always sends the version it is given. */}
+          version must not throw away a month or go-live date typed here but not saved yet. The card
+          follows the saved values for every field it holds no draft for. */}
       <FinancialYearCard settings={settings} onSaved={onSaved} disabled={reloading} />
       <Card title="Tax rates check">
         <div className="flex flex-col items-start gap-3">

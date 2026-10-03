@@ -171,6 +171,38 @@ describe("Financial year card", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  describe("when a new version of the settings arrives", () => {
+    const mount = (value: FinanceSettings) => {
+      const view = render(<ToastProvider><FinancialYearCard settings={value} onSaved={vi.fn()} /></ToastProvider>);
+      return (next: FinanceSettings) => view.rerender(<ToastProvider><FinancialYearCard settings={next} onSaved={vi.fn()} /></ToastProvider>);
+    };
+    const monthShown = () => screen.getByRole("combobox", { name: /Year starts in/ }).textContent;
+
+    it("shows the new saved values in fields nobody changed", () => {
+      const update = mount(settings());
+      update(settings({ financialYearStartMonth: 4, goLiveDate: "2026-08-20T00:00:00", concurrencyToken: "tok-2" }));
+      expect(monthShown()).toContain("April");
+      expect(goLiveField().textContent).toContain("Aug 20, 2026");
+    });
+
+    it("keeps a month changed but not saved, when the version changed for another reason", () => {
+      const update = mount(settings());
+      fireEvent.click(screen.getByRole("combobox", { name: /Year starts in/ }));
+      fireEvent.click(screen.getByRole("option", { name: "January" }));
+      update(settings({ whtRatesConfirmedAt: "2026-10-01T06:00:00", concurrencyToken: "tok-2" }));
+      expect(monthShown()).toContain("January");
+    });
+
+    it("lets go of a draft once it is the saved value, so a later change made elsewhere shows", () => {
+      const update = mount(settings());
+      fireEvent.click(screen.getByRole("combobox", { name: /Year starts in/ }));
+      fireEvent.click(screen.getByRole("option", { name: "January" }));
+      update(settings({ financialYearStartMonth: 1, concurrencyToken: "tok-2" }));
+      update(settings({ financialYearStartMonth: 4, concurrencyToken: "tok-3" }));
+      expect(monthShown()).toContain("April");
+    });
+  });
+
   it("blocks a second click while saving", async () => {
     let finish: () => void = () => {};
     save.mockImplementation(() => new Promise((resolve) => { finish = () => resolve(settings()); }));

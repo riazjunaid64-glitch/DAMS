@@ -22,8 +22,20 @@ type Props = {
 export function FinancialYearCard({ settings, onSaved, disabled = false }: Props) {
   const toast = useToast();
   const savedGoLive = serverDay(settings.goLiveDate);
-  const [month, setMonth] = useState(String(settings.financialYearStartMonth));
-  const [goLive, setGoLive] = useState(savedGoLive ?? "");
+  const savedMonth = String(settings.financialYearStartMonth);
+  // What the user changed and has not saved; a field with no draft shows the saved value. When a new
+  // version arrives, a draft that now equals the saved value was saved (this card's own Save) and is
+  // dropped; one that still differs survives a save made elsewhere on the same settings (Mark as checked).
+  const [monthDraft, setMonthDraft] = useState<string | null>(null);
+  const [goLiveDraft, setGoLiveDraft] = useState<string | null>(null);
+  const [seenVersion, setSeenVersion] = useState(settings.concurrencyToken);
+  if (seenVersion !== settings.concurrencyToken) {
+    setSeenVersion(settings.concurrencyToken);
+    if (monthDraft === savedMonth) setMonthDraft(null);
+    if (goLiveDraft === (savedGoLive ?? "")) setGoLiveDraft(null);
+  }
+  const month = monthDraft ?? savedMonth;
+  const goLive = goLiveDraft ?? savedGoLive ?? "";
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,7 +82,7 @@ export function FinancialYearCard({ settings, onSaved, disabled = false }: Props
           disabled={saving}
           options={MONTH_OPTIONS}
           value={month}
-          onChange={setMonth}
+          onChange={setMonthDraft}
           helper={`Current year: ${settings.currentFinancialYear}`}
         />
         <DatePicker
@@ -79,7 +91,7 @@ export function FinancialYearCard({ settings, onSaved, disabled = false }: Props
           disabled={saving}
           max={pakistanToday()}
           value={goLive}
-          onChange={setGoLive}
+          onChange={setGoLiveDraft}
           helper="Opening balances are the position at the start of this day."
         />
         <div>
