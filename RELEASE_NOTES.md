@@ -1,5 +1,15 @@
 # Unreleased
 
+## Loans on the shared library (KAN-93)
+
+Finance > Loans is rebuilt on the shared components for desktop and phone. The header has only **Add loan**; the back link, subtitle and Financial Reports button are gone. Search (loan, lender or account) and a Status filter narrow the loan cards; each card shows the status, the lender and account, and the outstanding principal. On a desktop the open loan sits under the cards with four figures (Outstanding principal, Total borrowed, Principal repaid, Interest paid), a pencil for **Edit loan**, **Record repayment** and **Receive loan funds**. **Loan activity** shows Date, Transaction, Account, Principal, Interest, Cash impact, Outstanding and Attachment, signed and coloured, with a ⋯ menu per row (**Correct**, **Delete**). It pages 20 at a time ("Showing 1–9 of 9 entries"), and **Export** downloads every movement of the loan as CSV, not only the page on screen.
+
+On a phone the list is its own screen and each loan opens on its own page, `/finance/loans/{id}`, with "‹ Loans" in the top bar. The activity shows as cards with **Load more**; Receive loan funds, Edit loan and Export activity sit in a sheet behind ⋯.
+
+Add / Edit loan, Record repayment, Receive loan funds and Correct are shared popups (full screen on a phone). The movement popup can switch between Repayment and Funds received, shows "Total leaving the bank" for a repayment, and keeps Save off until the amounts, date and account are filled. Correct shows the saved attachment with View, Download, Replace and Remove. Delete asks "Delete this repayment?" (or "Delete these loan funds?"): "The loan and bank balances will be worked out again." A new movement still carries a money-request key, a correction and a delete still send the row version, and closed loans still take no new movements. No server change.
+
+Shared shell: on a phone, a page whose trail has a linked step before the current one now goes back to that step. The Receipt and Application form pages therefore go back to their booking instead of the bookings list.
+
 ## Manage accounts and the go-live date (KAN-91)
 
 Manage accounts is rebuilt on the shared components for desktop and phone: one header, seven groups (Cash & bank, Cash held by staff, Fixed assets, Work in progress, Receivables, Liabilities, Capital) each with a subtotal row, no stat boxes and no "All accounts total", filters for search, Type, Holder and Status, and a pencil and a ⋯ menu on each row (an active system account has the pencil only). Clicking a row opens Account details with the figures, the tax held for FBR, and the transactions with a running balance. Add and Edit have no Display order (Edit sends the saved one back). Deactivate and Reactivate ask in a popup, and a refusal shows as a toast instead of a browser alert. A red notice shows the difference when the opening debits and credits do not match.
