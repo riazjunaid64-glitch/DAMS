@@ -44,7 +44,7 @@ export function FinancialYearCard({ settings, onSaved, disabled = false }: Props
         clearRatesConfirmation: false,
         concurrencyToken: settings.concurrencyToken,
       });
-      toast.success("Financial year saved.");
+      toast.success("Finance settings saved.");
       onSaved();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "The financial year could not be saved.");

@@ -67,7 +67,7 @@ describe("Financial year card", () => {
     expect(save.mock.calls[0]![0]).toEqual({
       financialYearStartMonth: 1, goLiveDate: null, markRatesConfirmed: false, clearRatesConfirmation: false, concurrencyToken: "tok",
     });
-    expect(await screen.findByText("Financial year saved.")).toBeTruthy();
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Change the go-live date?")).toBeNull();
   });
@@ -118,14 +118,14 @@ describe("Financial year card", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it("sends the new date on Change, then says Financial year saved. and reloads", async () => {
+  it("sends the new date on Change, then says Finance settings saved. and reloads", async () => {
     const onSaved = show(settings());
     pickDay("August 20, 2026");
     fireEvent.click(saveButton());
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Change" }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0]).toMatchObject({ goLiveDate: "2026-08-20" });
-    expect(await screen.findByText("Financial year saved.")).toBeTruthy();
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
     expect(onSaved).toHaveBeenCalledTimes(1);
   });
 
@@ -159,7 +159,7 @@ describe("Financial year card", () => {
     pickDay("August 20, 2026");
     fireEvent.click(saveButton());
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Change" }));
-    expect(await screen.findByText("Financial year saved.")).toBeTruthy();
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(saveButton().disabled).toBe(false);
   });

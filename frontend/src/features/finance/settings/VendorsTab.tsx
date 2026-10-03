@@ -57,7 +57,7 @@ export function VendorsTab({ adding, onAddClose }: Props) {
 
   const fetchPage = useCallback(async ({ skip, take, signal }: PagedListQuery) => {
     const page = await whtApi.listVendors({ search, filerStatus, skip, take }, signal);
-    return { items: page.items, hasMore: page.hasMore, totalCount: page.totalCount ?? null };
+    return { items: page.items, hasMore: page.hasMore, totalCount: page.totalCount };
   }, [search, filerStatus]);
   const list = usePagedList<Vendor>({ queryKey: `${search}|${filerStatus}`, fetchPage, itemKey: vendorKey });
   const failedEmpty = list.error !== null && list.rows.length === 0;

@@ -609,13 +609,46 @@ describe("Finance settings: financial year", () => {
     expect(await screen.findByText("Tax rates marked as checked.")).toBeTruthy();
   });
 
+  it("keeps a month picked but not saved when Mark as checked brings a new version", async () => {
+    wht.getSettings.mockResolvedValueOnce(settings()).mockResolvedValue(checked);
+    show();
+    await loaded();
+    fireEvent.click(tab(/Financial year/));
+    pick(/Year starts in/, "January");
+    fireEvent.click(button("Mark as checked"));
+    await waitFor(() => expect(wht.saveSettings).toHaveBeenCalledTimes(1));
+    expect(wht.saveSettings.mock.calls[0]![0]).toMatchObject({ financialYearStartMonth: 7, markRatesConfirmed: true, concurrencyToken: "tok" });
+    // The reload answers with version tok-2: the card is the same card, still holding January.
+    expect(await screen.findByText("Checked by accountant")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: /Year starts in/ }).textContent).toContain("January");
+  });
+
+  it("keeps a month picked but not saved when Clear check brings a new version", async () => {
+    wht.getSettings.mockResolvedValueOnce(checked).mockResolvedValue(settings({ concurrencyToken: "tok-3" }));
+    wht.saveSettings.mockResolvedValue(settings({ concurrencyToken: "tok-3" }));
+    show();
+    await loaded();
+    fireEvent.click(tab(/Financial year/));
+    pick(/Year starts in/, "January");
+    fireEvent.click(button("Clear check"));
+    await waitFor(() => expect(wht.saveSettings).toHaveBeenCalledTimes(1));
+    expect(wht.saveSettings.mock.calls[0]![0]).toMatchObject({ financialYearStartMonth: 7, clearRatesConfirmation: true, concurrencyToken: "tok-2" });
+    expect(await screen.findByText("Not checked yet")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: /Year starts in/ }).textContent).toContain("January");
+    // Saving the year now sends the new version, not the one the page opened with.
+    fireEvent.click(button("Save"));
+    await waitFor(() => expect(wht.saveSettings).toHaveBeenCalledTimes(2));
+    expect(wht.saveSettings.mock.calls[1]![0]).toMatchObject({ financialYearStartMonth: 1, concurrencyToken: "tok-3" });
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
+  });
+
   it("keeps the chosen tab after a save", async () => {
     show();
     await loaded();
     fireEvent.click(tab(/Financial year/));
     pick(/Year starts in/, "January");
     fireEvent.click(button("Save"));
-    expect(await screen.findByText("Financial year saved.")).toBeTruthy();
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
     await waitFor(() => expect(wht.getSettings).toHaveBeenCalledTimes(2));
     expect(tab(/Financial year/).getAttribute("aria-selected")).toBe("true");
   });
@@ -628,7 +661,7 @@ describe("Finance settings: on a phone", () => {
     show();
     await screen.findAllByText("Head 01");
     expect(screen.queryAllByRole("tab")).toHaveLength(0);
-    expect(screen.getByRole("combobox", { name: /Show/ }).textContent).toContain("Expense categories");
+    expect(screen.getByRole("combobox", { name: /Section/ }).textContent).toContain("Expense categories");
     expect(button("Add")).toBeTruthy();
     expect(pageText()).toContain("Showing 20 of 25 entries");
     fireEvent.click(button("Load more"));

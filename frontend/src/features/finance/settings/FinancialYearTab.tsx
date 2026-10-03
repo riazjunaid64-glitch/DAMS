@@ -20,8 +20,10 @@ export function FinancialYearTab({ settings, reloading, checking, onCheck, onSav
   const by = settings.whtRatesConfirmedByName;
   return (
     <div className="grid items-start gap-4 md:grid-cols-2 md:gap-5">
-      {/* A save brings a new version; the card then starts again from what was saved. */}
-      <FinancialYearCard key={settings.concurrencyToken} settings={settings} onSaved={onSaved} disabled={reloading} />
+      {/* Not keyed by the version: Mark as checked and Clear check save the same settings row, and a new
+          version must not throw away a month or go-live date typed here but not saved yet. After its own
+          save the card already holds what was saved, and it always sends the version it is given. */}
+      <FinancialYearCard settings={settings} onSaved={onSaved} disabled={reloading} />
       <Card title="Tax rates check">
         <div className="flex flex-col items-start gap-3">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">

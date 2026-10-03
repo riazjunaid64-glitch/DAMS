@@ -36,7 +36,7 @@ export const listVendors = ({ search, filerStatus, skip, take }: VendorQuery, si
   const params = new URLSearchParams({ skip: String(skip), take: String(take) });
   if (search) params.set("search", search);
   if (filerStatus) params.set("filerStatus", filerStatus);
-  return apiJson<{ items: Vendor[]; hasMore: boolean; totalCount?: number }>(`/api/finance/vendors?${params}`, { signal });
+  return apiJson<{ items: Vendor[]; hasMore: boolean; totalCount: number }>(`/api/finance/vendors?${params}`, { signal });
 };
 
 export const vendorOptions = (includeInactive = false) =>

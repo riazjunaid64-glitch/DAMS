@@ -109,6 +109,7 @@ function SettingsWorkspace() {
         value={tab}
         onChange={changeTab}
         aria-label="Finance settings sections"
+        phoneDropdownLabel="Section"
       />
 
       {data.error && tab !== "vendors" && (
