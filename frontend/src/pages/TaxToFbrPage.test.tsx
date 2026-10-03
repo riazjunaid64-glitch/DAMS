@@ -418,6 +418,25 @@ describe("Tax to FBR: record, edit and delete", () => {
     expect((within(screen.getByRole("dialog")).getByLabelText(/^Amount/) as HTMLInputElement).value).toBe("184,350");
   });
 
+  it("holds Record deposit back again while the figure reloads after a save, so it never opens on the old amount", async () => {
+    show();
+    await loaded();
+    fireEvent.click(button("Record deposit"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("combobox", { name: /Paid from account/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Meezan Bank · Seven Ventures" }));
+    let arrive: (value: WhtPayableSummary) => void = () => {};
+    summaryApi.mockReturnValue(new Promise<WhtPayableSummary>((resolve) => { arrive = resolve; }));
+    fireEvent.click(button("Save", within(screen.getByRole("dialog").querySelector("footer") as HTMLElement)));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The old Rs 184,350 is still on the cards, but the button waits for the new figure.
+    expect(screen.getByText("Rs 184,350")).toBeTruthy();
+    expect(button("Record deposit").disabled).toBe(true);
+    arrive({ ...summary, outstandingPayable: 84_350 });
+    await waitFor(() => expect(button("Record deposit").disabled).toBe(false));
+    fireEvent.click(button("Record deposit"));
+    expect((within(screen.getByRole("dialog")).getByLabelText(/^Amount/) as HTMLInputElement).value).toBe("84,350");
+  });
+
   it("still lets a deposit be recorded when the owed figure could not be loaded", async () => {
     summaryApi.mockRejectedValue(new Error("The withholding position could not be loaded."));
     show();

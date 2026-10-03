@@ -119,9 +119,10 @@ export default function TaxToFbrPage({ user }: { user: User | null }) {
   // honest count, so the line waits for it (and stays away if it fails; that list shows its own error).
   const supplierCount = !suppliers.loading && suppliers.data !== null && suppliers.dataKey === key ? suppliers.data.length : null;
   const showLine = ranged && summary.data !== null && summary.dataKey === key && supplierCount !== null;
-  // A new deposit opens on what is owed, so it waits for that figure. If the figure failed there is
-  // nothing to wait for: the deposit can still be recorded, and the popup then opens with no amount.
-  const awaitingOwed = summary.data === null && summary.loading;
+  // A new deposit opens on what is owed, so it waits for that figure, on a reload after a save or a
+  // delete as well as the first load: the old figure is still on screen but no longer true. If the
+  // figure failed there is nothing to wait for: the deposit can still be recorded, with no amount.
+  const awaitingOwed = summary.loading;
 
   return (
     <div className={page}>
