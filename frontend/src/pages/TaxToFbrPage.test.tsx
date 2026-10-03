@@ -272,6 +272,16 @@ describe("Tax to FBR: From and To", () => {
     expect((await screen.findByText(/In the selected period/)).textContent).toContain("from 1 payment to 1 supplier");
   });
 
+  it("shows no period line at all when the supplier list fails, rather than a sentence without its supplier count", async () => {
+    suppliersApi.mockRejectedValue(new Error("The supplier list is down."));
+    show();
+    await loaded();
+    await setRange();
+    await waitFor(() => expect(suppliersApi).toHaveBeenLastCalledWith("2026-10-01", "2026-10-15", expect.anything()));
+    await waitFor(() => expect(summaryApi).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/In the selected period/)).toBeNull();
+  });
+
   it("hides the line again on Reset and goes back to all time", async () => {
     show();
     await loaded();
@@ -320,6 +330,26 @@ describe("Tax to FBR: pages", () => {
     fireEvent.click(button("Delete", within(screen.getByRole("dialog"))));
     await waitFor(() => expect(screen.getByText(/Showing/).textContent).toBe("Showing 1–20 of 20 entries"));
     expect(screen.getAllByText("CPR-0001").length).toBeGreaterThan(0);
+  });
+
+  it("remembers the step back, so the list growing again does not return to the old page", async () => {
+    depositsApi.mockResolvedValue(manyDeposits(21));
+    show();
+    await screen.findAllByText("CPR-0001");
+    fireEvent.click(button("Page 2"));
+    depositsApi.mockResolvedValue(manyDeposits(20));
+    fireEvent.click(table().getByRole("button", { name: "More for deposit CPR-0021" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    fireEvent.click(button("Delete", within(screen.getByRole("dialog"))));
+    await waitFor(() => expect(screen.getByText(/Showing/).textContent).toBe("Showing 1–20 of 20 entries"));
+    // Someone records a twenty-first deposit; the list reloads and must stay on page one.
+    depositsApi.mockResolvedValue(manyDeposits(21));
+    fireEvent.click(button("Record deposit"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("combobox", { name: /Paid from account/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Meezan Bank · Seven Ventures" }));
+    fireEvent.click(button("Save", within(screen.getByRole("dialog").querySelector("footer") as HTMLElement)));
+    await waitFor(() => expect(saveDeposit).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/Showing/).textContent).toBe("Showing 1–20 of 21 entries"));
   });
 
   it("keeps the page it is on after a deposit is edited", async () => {
@@ -374,6 +404,46 @@ describe("Tax to FBR: record, edit and delete", () => {
     await waitFor(() => expect(summaryApi).toHaveBeenCalledTimes(2));
     expect(depositsApi).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("holds Record deposit back until the owed figure has arrived, so the popup can open on it", async () => {
+    let arrive: (value: WhtPayableSummary) => void = () => {};
+    summaryApi.mockReturnValue(new Promise<WhtPayableSummary>((resolve) => { arrive = resolve; }));
+    show();
+    await loaded();
+    expect(button("Record deposit").disabled).toBe(true);
+    arrive(summary);
+    await waitFor(() => expect(button("Record deposit").disabled).toBe(false));
+    fireEvent.click(button("Record deposit"));
+    expect((within(screen.getByRole("dialog")).getByLabelText(/^Amount/) as HTMLInputElement).value).toBe("184,350");
+  });
+
+  it("holds Record deposit back again while the figure reloads after a save, so it never opens on the old amount", async () => {
+    show();
+    await loaded();
+    fireEvent.click(button("Record deposit"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("combobox", { name: /Paid from account/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Meezan Bank · Seven Ventures" }));
+    let arrive: (value: WhtPayableSummary) => void = () => {};
+    summaryApi.mockReturnValue(new Promise<WhtPayableSummary>((resolve) => { arrive = resolve; }));
+    fireEvent.click(button("Save", within(screen.getByRole("dialog").querySelector("footer") as HTMLElement)));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The old Rs 184,350 is still on the cards, but the button waits for the new figure.
+    expect(screen.getByText("Rs 184,350")).toBeTruthy();
+    expect(button("Record deposit").disabled).toBe(true);
+    arrive({ ...summary, outstandingPayable: 84_350 });
+    await waitFor(() => expect(button("Record deposit").disabled).toBe(false));
+    fireEvent.click(button("Record deposit"));
+    expect((within(screen.getByRole("dialog")).getByLabelText(/^Amount/) as HTMLInputElement).value).toBe("84,350");
+  });
+
+  it("still lets a deposit be recorded when the owed figure could not be loaded", async () => {
+    summaryApi.mockRejectedValue(new Error("The withholding position could not be loaded."));
+    show();
+    await loaded();
+    await waitFor(() => expect(button("Record deposit").disabled).toBe(false));
+    fireEvent.click(button("Record deposit"));
+    expect((within(screen.getByRole("dialog")).getByLabelText(/^Amount/) as HTMLInputElement).value).toBe("");
   });
 
   it("asks before deleting, by the deposit's own challan number and amount", async () => {
