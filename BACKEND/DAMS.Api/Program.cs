@@ -280,7 +280,6 @@ builder.Services.AddScoped<IFinanceService, FinanceService>();
 builder.Services.AddScoped<IFinanceAccountService, FinanceAccountService>();
 builder.Services.AddScoped<IStaffCashService, StaffCashService>();
 builder.Services.AddScoped<IRevenueCategoryService, RevenueCategoryService>();
-builder.Services.AddScoped<IOpeningBalanceService, OpeningBalanceService>();
 builder.Services.AddScoped<ICapitalPartnerService, CapitalPartnerService>();
 builder.Services.AddScoped<ILoanService, LoanService>();
 builder.Services.AddScoped<IExpenseCategoryService, ExpenseCategoryService>();

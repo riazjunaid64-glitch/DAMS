@@ -77,12 +77,12 @@ describe("Pay refund", () => {
   });
 
   it("keeps the popup open with what was typed and shows the server's message when the payment is refused", async () => {
-    vi.mocked(bookingCancellationApi.payRefund).mockRejectedValue(new Error("Refund date cannot be before the committed opening balance date (Sep 1, 2026)."));
+    vi.mocked(bookingCancellationApi.payRefund).mockRejectedValue(new Error("Refund date cannot be before the go-live date (Sep 1, 2026)."));
     const { onClose, onPaid } = show();
     fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Paid at the branch" } });
     fireEvent.click(payButton());
 
-    expect(await screen.findByText(/committed opening balance date/)).toBeTruthy();
+    expect(await screen.findByText(/go-live date/)).toBeTruthy();
     expect((screen.getByLabelText("Notes") as HTMLTextAreaElement).value).toBe("Paid at the branch");
     expect(onClose).not.toHaveBeenCalled();
     expect(onPaid).not.toHaveBeenCalled();

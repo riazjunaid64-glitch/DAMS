@@ -610,7 +610,7 @@ namespace DAMS.Application.Services
         /// deliberately not run through <see cref="FinanceDateRules"/>: today can never be in the
         /// future, and the go-live date can never be in the future either
         /// (<see cref="FinanceDateRules.EnsureBaselineDate"/>), so today is always on or after the
-        /// committed baseline. There is nothing for the rule to reject and no reason to pay for the
+        /// go-live date. There is nothing for the rule to reject and no reason to pay for the
         /// query. Zero movements are skipped — a row that moves nothing is noise the reports would
         /// still have to read.
         /// </para>

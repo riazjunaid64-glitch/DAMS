@@ -61,9 +61,6 @@ namespace DAMS.Infrastructure.Data
         public DbSet<RevenueCategory> RevenueCategories { get; set; }
         public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
         public DbSet<FinanceAccount> FinanceAccounts { get; set; }
-        public DbSet<OpeningBalanceSet> OpeningBalanceSets { get; set; }
-        public DbSet<OpeningBalanceEntry> OpeningBalanceEntries { get; set; }
-        public DbSet<OpeningBalanceAuditEntry> OpeningBalanceAuditEntries { get; set; }
         public DbSet<CapitalPartner> CapitalPartners { get; set; }
         public DbSet<CapitalTransaction> CapitalTransactions { get; set; }
         public DbSet<Loan> Loans { get; set; }
@@ -1178,39 +1175,6 @@ namespace DAMS.Infrastructure.Data
                 entity.HasData(SeedRevenueCategories());
             });
 
-            modelBuilder.Entity<OpeningBalanceSet>(entity =>
-            {
-                entity.Property(s => s.RowVersion).IsRowVersion();
-                entity.HasIndex(s => s.AsAtDate).IsUnique();
-                entity.ToTable(t => t.HasCheckConstraint("CK_OpeningBalanceSets_Singleton", "[Id] = 1"));
-            });
-
-            modelBuilder.Entity<OpeningBalanceEntry>(entity =>
-            {
-                entity.Property(e => e.DebitAmount).HasColumnType("decimal(18,2)");
-                entity.Property(e => e.CreditAmount).HasColumnType("decimal(18,2)");
-                entity.Property(e => e.Note).HasMaxLength(500);
-                entity.HasIndex(e => new { e.OpeningBalanceSetId, e.FinanceAccountId }).IsUnique();
-                entity.ToTable(t =>
-                {
-                    t.HasCheckConstraint("CK_OpeningBalanceEntry_NonNegative", "[DebitAmount] >= 0 AND [CreditAmount] >= 0");
-                    t.HasCheckConstraint("CK_OpeningBalanceEntry_OneSide", "[DebitAmount] = 0 OR [CreditAmount] = 0");
-                });
-                entity.HasOne(e => e.OpeningBalanceSet).WithMany(s => s.Entries)
-                    .HasForeignKey(e => e.OpeningBalanceSetId).OnDelete(DeleteBehavior.Cascade);
-                entity.HasOne(e => e.FinanceAccount).WithMany(a => a.OpeningBalanceEntries)
-                    .HasForeignKey(e => e.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
-            });
-
-            modelBuilder.Entity<OpeningBalanceAuditEntry>(entity =>
-            {
-                entity.Property(a => a.Action).IsRequired().HasMaxLength(30);
-                entity.Property(a => a.Note).HasMaxLength(1000);
-                entity.HasIndex(a => new { a.OpeningBalanceSetId, a.OccurredAt });
-                entity.HasOne(a => a.OpeningBalanceSet).WithMany(s => s.AuditEntries)
-                    .HasForeignKey(a => a.OpeningBalanceSetId).OnDelete(DeleteBehavior.Cascade);
-            });
-
             modelBuilder.Entity<CapitalPartner>(entity =>
             {
                 entity.Property(p => p.Name).IsRequired().HasMaxLength(200);
@@ -1706,9 +1670,6 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<CustomerDocumentAuditEntry>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Customer document audit entries are append-only.");
-            if (ChangeTracker.Entries<OpeningBalanceAuditEntry>()
-                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
-                throw new InvalidOperationException("Opening balance audit entries are append-only.");
             if (ChangeTracker.Entries<CapitalTransaction>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Capital transactions are immutable.");
@@ -1748,8 +1709,13 @@ namespace DAMS.Infrastructure.Data
         // been reported, so it leaves evidence. See FinanceRecordAudit.
         private static readonly HashSet<Type> AuditedFinancialTypes =
         [
-            typeof(Expense), typeof(ManualRevenue), typeof(AssetPurchase), typeof(WhtDeposit)
+            typeof(Expense), typeof(ManualRevenue), typeof(AssetPurchase), typeof(WhtDeposit),
+            typeof(FinanceAccount), typeof(FinanceSetting)
         ];
+
+        // Account and settings rows carry an UpdatedAt that every save touches. It says nothing about
+        // what changed, and leaving it in would make an identical re-save look like a correction.
+        private static readonly HashSet<Type> TypesWithoutUpdatedAtTrail = [typeof(FinanceAccount), typeof(FinanceSetting)];
 
         /// <summary>
         /// Records what changed on an editable money record, in the same SaveChanges as the change.
@@ -1774,6 +1740,8 @@ namespace DAMS.Infrastructure.Data
                     if (property.Metadata.IsPrimaryKey()) continue;
                     // RowVersion moves on every save and says nothing about what an operator did.
                     if (property.Metadata.Name == nameof(Expense.RowVersion)) continue;
+                    if (property.Metadata.Name == nameof(FinanceAccount.UpdatedAt)
+                        && TypesWithoutUpdatedAtTrail.Contains(entry.Metadata.ClrType)) continue;
                     if (deleted)
                     {
                         fields[property.Metadata.Name] = Describe(property.OriginalValue);

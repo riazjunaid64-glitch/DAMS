@@ -136,8 +136,7 @@ namespace DAMS.Application.Services
             var rows = await query.Include(t => t.Attachment).OrderBy(t => t.Date).ThenBy(t => t.Id).ToListAsync(cancellationToken);
             var transactions = rows.Select(MapTransaction).ToList();
             var baseline = partner.FinanceAccount?.OpeningBalance ?? 0m;
-            var baselineDate = await _context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
-                .Select(s => (DateTime?)s.AsAtDate).SingleOrDefaultAsync(cancellationToken);
+            var baselineDate = await FinanceDateRules.BaselineAsync(_context, cancellationToken);
             var baselineWithinEnd = !baselineDate.HasValue || !toExclusive.HasValue || baselineDate.Value < toExclusive.Value;
             var baselineBeforeRange = !baselineDate.HasValue || !fromDate.HasValue || baselineDate.Value < fromDate.Value;
             var opening = before;
@@ -147,7 +146,7 @@ namespace DAMS.Application.Services
                 transactions.Add(new CapitalTransactionDto
                 {
                     Id = -partner.Id, Type = CapitalTransactionType.OpeningBalance, Amount = baseline,
-                    Date = baselineDate!.Value, Note = "Committed opening balance"
+                    Date = baselineDate!.Value, Note = "Opening balance"
                 });
                 transactions = transactions.OrderBy(t => t.Date).ThenBy(t => t.Id).ToList();
             }
@@ -192,10 +191,10 @@ namespace DAMS.Application.Services
             // Trial Balance already carries. An OpeningBalance row is the one type with no other
             // side anywhere — it raises the partner's capital account and nothing else, so each one
             // pushes the Balance Sheet out by its own amount. Opening capital is not recorded here
-            // at all: it belongs to the committed opening balance set, which posts it to the capital
-            // account against the rest of the baseline. GetStatementAsync shows it from there.
+            // at all: it is the opening balance of the partner's capital account, typed in Manage
+            // accounts, and GetStatementAsync shows it from there.
             if (dto.Type == CapitalTransactionType.OpeningBalance)
-                throw new InvalidOperationException("Opening capital cannot be recorded as a movement. Enter it in the opening balances for the partner's capital account instead.");
+                throw new InvalidOperationException("Opening capital cannot be recorded as a movement. Enter it as the opening balance of the partner's capital account in Manage accounts instead.");
             if (dto.Amount <= 0m) throw new InvalidOperationException("Amount must be greater than zero.");
             if (dto.Amount > 999_999_999_999_999.99m) throw new InvalidOperationException("Amount is outside the supported range.");
             if (dto.Date == default) throw new InvalidOperationException("Transaction date is required.");
@@ -204,8 +203,8 @@ namespace DAMS.Application.Services
             // A contribution or withdrawal moves cash the same day it is saved, and every capital
             // type moves the partner's Capital balance on the Balance Sheet — so the date takes the
             // same three bounds as an expense or a loan drawdown. See FinanceDateRules: without them
-            // next month's contribution inflates today's bank, and one dated before the committed
-            // opening balances is counted twice.
+            // next month's contribution inflates today's bank, and one dated before the go-live
+            // date is counted twice.
             await FinanceDateRules.EnsureAsync(_context, dto.Date, "Transaction date", cancellationToken);
             // Checked here for a friendly refusal before anything is written to disk, and checked
             // AGAIN under the row lock at save time — everything it reads is something another
@@ -540,8 +539,8 @@ namespace DAMS.Application.Services
         /// Movements are not the only history. A partner's opening capital is not stored on the
         /// partner either — <see cref="GetStatementAsync"/> and <c>LoadPartnersAsync</c> both read
         /// it from <c>FinanceAccount.OpeningBalance</c> of whichever account is linked today, which
-        /// is written once, when the opening balance set is committed. So a partner carrying a
-        /// committed opening balance and no movements at all is still holding history: relink it
+        /// is typed on the account in Manage accounts. So a partner carrying an
+        /// opening balance and no movements at all is still holding history: relink it
         /// and that opening capital silently becomes someone else's, or none of it stays anyone's.
         /// </para>
         /// </summary>
@@ -559,7 +558,7 @@ namespace DAMS.Application.Services
                 .Select(a => (decimal?)a.OpeningBalance).SingleOrDefaultAsync(cancellationToken) ?? 0m;
             if (openingCapital != 0m)
                 throw new InvalidOperationException(
-                    $"This partner's capital account carries {openingCapital:N2} of committed opening capital, so the account cannot be changed — that opening balance is the partner's own history and would move with the link. Deactivate this partner and create a new one against the new account instead.");
+                    $"This partner's capital account carries {openingCapital:N2} of opening capital, so the account cannot be changed — that opening balance is the partner's own history and would move with the link. Deactivate this partner and create a new one against the new account instead.");
         }
 
         private async Task ValidateCapitalAccount(int? accountId, int? partnerId, CancellationToken cancellationToken)

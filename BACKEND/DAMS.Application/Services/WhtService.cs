@@ -373,6 +373,15 @@ namespace DAMS.Application.Services
                 ApplyConcurrencyToken(settings, dto.ConcurrencyToken);
 
             settings.FinancialYearStartMonth = dto.FinancialYearStartMonth;
+            if (dto.GoLiveDate.HasValue && dto.GoLiveDate.Value.Date != settings.GoLiveDate?.Date)
+            {
+                var goLive = dto.GoLiveDate.Value.Date;
+                FinanceDateRules.EnsureBaselineDate(goLive, "Go-live date");
+                var preBaseline = await FinanceDateRules.PreBaselineEventsAsync(_context, goLive, cancellationToken);
+                if (preBaseline.Count > 0)
+                    throw new InvalidOperationException(FinanceDateRules.CutoverRefusal(goLive, preBaseline));
+                settings.GoLiveDate = goLive;
+            }
             if (dto.MarkRatesConfirmed)
             {
                 settings.WhtRatesConfirmedAt = DateTime.UtcNow;
@@ -410,6 +419,7 @@ namespace DAMS.Application.Services
                 FinancialYearStartMonth = month,
                 WhtRatesConfirmedAt = settings.WhtRatesConfirmedAt,
                 WhtRatesConfirmedByName = settings.WhtRatesConfirmedByName,
+                GoLiveDate = settings.GoLiveDate,
                 CurrentFinancialYear = FinancialYear.Label(PakistanTime.Today, month),
                 ConcurrencyToken = settings.RowVersion.Length == 0
                     ? string.Empty
@@ -908,9 +918,8 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// The opening Tax Payable brought over from the client's previous system, as committed on
-        /// the opening-balance sheet. Zero until a baseline is committed, because that is the only
-        /// point <see cref="FinanceAccount.OpeningBalance"/> is written.
+        /// The opening Tax Payable brought over from the client's previous system, typed as the
+        /// opening balance of the Tax Payable account in Manage accounts.
         /// <para>
         /// It is part of the liability for the same reason every other opening balance is part of
         /// its account: the Balance Sheet and the Tax Payable account both read

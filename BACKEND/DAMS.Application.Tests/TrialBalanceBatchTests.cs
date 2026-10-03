@@ -53,11 +53,7 @@ public sealed class TrialBalanceBatchTests
         // A mid-month baseline deliberately falls between the February and March month-end
         // columns. Physical account movements remain all-time, while virtual P&L accumulation
         // resets on the baseline and project reports never inherit global opening balances.
-        context.OpeningBalanceSets.Add(new OpeningBalanceSet
-        {
-            AsAtDate = new DateTime(2026, 3, 15), IsCommitted = true,
-            CommittedAt = new DateTime(2026, 3, 14, 19, 0, 0, DateTimeKind.Utc)
-        });
+        await GoLiveSeed.SetAsync(context, new DateTime(2026, 3, 15));
         context.ManualRevenues.AddRange(
             Income(projectA.Id, bank.Id, incomeCategory.Id, 100m, new DateTime(2026, 1, 10)),
             Income(projectB.Id, bank.Id, incomeCategory.Id, 200m, new DateTime(2026, 2, 10)),

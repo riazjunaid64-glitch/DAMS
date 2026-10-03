@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.FinanceDtos;
+using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
@@ -12,12 +13,12 @@ namespace DAMS.Application.Tests;
 /// <summary>
 /// The go-live cutover, from both sides.
 /// <para>
-/// A committed opening balance is read by every report as an AS-AT position: the figure the
-/// accountant typed already contains everything that happened before its date, so the reports start
-/// their windows there and add movements on top. That makes the baseline a boundary with two halves
-/// to defend. Nothing may be POSTED behind it — <see cref="FinanceDateRules"/> — and nothing may
-/// already BE behind it when it is committed, which no amount of posting validation can achieve
-/// because those rows were legal when they were written.
+/// The opening balances are read by every report as an AS-AT position at the go-live date: the
+/// figure the accountant typed already contains everything that happened before it, so the reports
+/// start their windows there and add movements on top. That makes the go-live date a boundary with
+/// two halves to defend. Nothing may be POSTED behind it — <see cref="FinanceDateRules"/> — and
+/// nothing may already BE behind it when the date is set, which no amount of posting validation can
+/// achieve because those rows were legal when they were written.
 /// </para>
 /// <para>
 /// Both halves fail the same silent way: the pre-baseline amount is counted twice, once inside the
@@ -33,7 +34,7 @@ public sealed class FinanceCutoverBoundaryTests
     // ── Nothing may be posted behind the baseline ──
 
     [Fact]
-    public async Task ACapitalContribution_CannotBeDatedBeforeTheCommittedBaseline()
+    public async Task ACapitalContribution_CannotBeDatedBeforeTheGoLiveDate()
     {
         // Capital was the one posting path still validating only that a date had been supplied. A
         // contribution moves the bank account the day it is saved and the partner's Capital balance
@@ -49,7 +50,7 @@ public sealed class FinanceCutoverBoundaryTests
                 Date = GoLive.AddDays(-1), FinanceAccountId = world.BankId
             }, userId: 1));
 
-        Assert.Contains("before the committed opening balance date", error.Message);
+        Assert.Contains("before the go-live date", error.Message);
         Assert.Empty(context.CapitalTransactions);
     }
 
@@ -91,7 +92,7 @@ public sealed class FinanceCutoverBoundaryTests
     }
 
     [Fact]
-    public async Task Possession_CannotRecogniseASaleBehindTheCommittedBaseline()
+    public async Task Possession_CannotRecogniseASaleBehindTheGoLiveDate()
     {
         // Possession is the largest posting DAMS makes — it books the sale as revenue and raises the
         // whole receivable — and it was checking only "not future" and "not before the booking". A
@@ -104,7 +105,7 @@ public sealed class FinanceCutoverBoundaryTests
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.GivePossessionAsync(world.BookingId, GoLive.AddDays(-2), adminUserId: 5));
 
-        Assert.Contains("before the committed opening balance date", error.Message);
+        Assert.Contains("before the go-live date", error.Message);
         Assert.Empty(context.BookingSaleRecognitions);
         Assert.Equal(BookingStatus.PaymentPlanActive, context.Bookings.Single().Status);
     }
@@ -125,10 +126,10 @@ public sealed class FinanceCutoverBoundaryTests
         Assert.Equal(1_000_000m, recognition.NetSaleValue);
     }
 
-    // ── Nothing may already be behind the baseline when it is committed ──
+    // ── Nothing may already be behind the go-live date when it is set ──
 
     [Fact]
-    public async Task CommittingABaseline_IsRefusedWhileEarlierFinancialRecordsExist()
+    public async Task SettingTheGoLiveDate_IsRefusedWhileEarlierFinancialRecordsExist()
     {
         await using var context = Context();
         var accounts = await SeedAccountsAsync(context);
@@ -146,23 +147,18 @@ public sealed class FinanceCutoverBoundaryTests
         });
         await context.SaveChangesAsync();
 
-        var service = new OpeningBalanceService(context);
-        var set = await Draft(service, GoLive, accounts.BankId, accounts.CapitalAccountId);
-
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.CommitAsync(set.Id, set.ConcurrencyToken, 1));
+            Apply(context, GoLive));
 
         Assert.Contains("1 expenses", error.Message);
         Assert.Contains("1 capital transactions", error.Message);
         // Names the earliest so the operator can act on it rather than go hunting.
         Assert.Contains("20 Jul 2026", error.Message);
-        Assert.False(context.OpeningBalanceSets.Single().IsCommitted);
-        // And the accounts keep their untouched opening balances: a refused commit writes nothing.
-        Assert.All(await context.FinanceAccounts.ToListAsync(), a => Assert.Equal(0m, a.OpeningBalance));
+        Assert.Null(await FinanceDateRules.BaselineAsync(context, default));
     }
 
     [Fact]
-    public async Task CommittingABaseline_IsAllowedWhenTheOnlyRecordsAreOnOrAfterIt()
+    public async Task SettingTheGoLiveDate_IsAllowedWhenTheOnlyRecordsAreOnOrAfterIt()
     {
         await using var context = Context();
         var accounts = await SeedAccountsAsync(context);
@@ -173,20 +169,17 @@ public sealed class FinanceCutoverBoundaryTests
         });
         await context.SaveChangesAsync();
 
-        var service = new OpeningBalanceService(context);
-        var set = await Draft(service, GoLive, accounts.BankId, accounts.CapitalAccountId);
+        var saved = await Apply(context, GoLive);
 
-        var committed = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
-
-        Assert.True(committed.IsCommitted);
-        Assert.Equal(1_000_000m, (await context.FinanceAccounts.SingleAsync(a => a.Id == accounts.BankId)).OpeningBalance);
+        Assert.Equal(GoLive, saved.GoLiveDate);
+        Assert.Equal(GoLive, await FinanceDateRules.BaselineAsync(context, default));
     }
 
     [Fact]
     public async Task TheCutoverCheck_LooksAtEveryKindOfFinancialRecord_NotJustExpenses()
     {
         // The double count does not care which table the movement is in, so neither does the check.
-        // A receipt alone must be enough to stop the commit.
+        // A receipt alone must be enough to stop the date being set.
         await using var context = Context();
         var accounts = await SeedAccountsAsync(context);
         var world = await SeedBookingAsync(context);
@@ -198,33 +191,29 @@ public sealed class FinanceCutoverBoundaryTests
         });
         await context.SaveChangesAsync();
 
-        var service = new OpeningBalanceService(context);
-        var set = await Draft(service, GoLive, accounts.BankId, accounts.CapitalAccountId);
-
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.CommitAsync(set.Id, set.ConcurrencyToken, 1));
+            Apply(context, GoLive));
         Assert.Contains("1 customer receipts", error.Message);
     }
 
-    // ── The baseline date itself ──
+    // ── The go-live date itself ──
 
     /// <summary>
     /// A go-live date in the future locks the business out of its own finance module: the balances
-    /// are committed as the position at the start of a day that has not happened, and every entry
-    /// between today and then is refused for being "before the committed opening balance date".
+    /// are the position at the start of a day that has not happened, and every entry between today
+    /// and then is refused for being before the go-live date.
     /// </summary>
     [Fact]
     public async Task AGoLiveDate_CannotBeInTheFuture()
     {
         await using var context = Context();
         await SeedAccountsAsync(context);
-        var service = new OpeningBalanceService(context);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.CreateAsync(PakistanTime.Today.AddDays(12), 1));
+            Apply(context, PakistanTime.Today.AddDays(12)));
 
         Assert.Contains("cannot be in the future", error.Message);
-        Assert.Empty(context.OpeningBalanceSets);
+        Assert.Null(await FinanceDateRules.BaselineAsync(context, default));
     }
 
     [Fact]
@@ -232,224 +221,109 @@ public sealed class FinanceCutoverBoundaryTests
     {
         await using var context = Context();
         await SeedAccountsAsync(context);
-        var service = new OpeningBalanceService(context);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.CreateAsync(new DateTime(1752, 12, 31), 1));
+            Apply(context, new DateTime(1752, 12, 31)));
 
         Assert.Contains("cannot be before", error.Message);
-        Assert.Empty(context.OpeningBalanceSets);
-    }
-
-    /// <summary>
-    /// A mistyped month has to be recoverable. Only one baseline may ever exist, so before this a
-    /// typo left the client with a draft it could neither use nor replace, and the only way out was
-    /// editing the database by hand.
-    /// </summary>
-    [Fact]
-    public async Task AMistypedGoLiveDate_CanBeCorrectedWhileTheDraftIsUncommitted()
-    {
-        await using var context = Context();
-        var accounts = await SeedAccountsAsync(context);
-        var service = new OpeningBalanceService(context);
-        var set = await service.CreateAsync(new DateTime(2026, 7, 1), 1);
-        Assert.Equal(new DateTime(2026, 7, 1), set.AsAtDate);
-
-        var corrected = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
-        {
-            AsAtDate = GoLive, ConcurrencyToken = set.ConcurrencyToken,
-            Entries =
-            [
-                new() { FinanceAccountId = accounts.BankId, DebitAmount = 1_000_000m },
-                new() { FinanceAccountId = accounts.CapitalAccountId, CreditAmount = 1_000_000m }
-            ]
-        }, 1);
-
-        Assert.Equal(GoLive, corrected.AsAtDate);
-        // On the audit trail, because moving it moves the baseline every report is measured from.
-        Assert.Contains(corrected.AuditEntries, a => a.Note != null && a.Note.Contains("01 Aug 2026"));
-
-        // And the corrected date is the one that commits.
-        var committed = await service.CommitAsync(corrected.Id, corrected.ConcurrencyToken, 1);
-        Assert.True(committed.IsCommitted);
-        Assert.Equal(GoLive, committed.AsAtDate);
+        Assert.Null(await FinanceDateRules.BaselineAsync(context, default));
     }
 
     [Fact]
-    public async Task ACorrectedGoLiveDate_IsHeldToTheSameBounds_AndACommittedOneCannotMoveAtAll()
+    public async Task SavingWithoutAGoLiveDate_LeavesItAsItWas()
     {
         await using var context = Context();
-        var accounts = await SeedAccountsAsync(context);
-        var service = new OpeningBalanceService(context);
-        var set = await Draft(service, GoLive, accounts.BankId, accounts.CapitalAccountId);
+        await Apply(context, GoLive);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
-            {
-                AsAtDate = PakistanTime.Today.AddDays(30), ConcurrencyToken = set.ConcurrencyToken,
-                Entries = []
-            }, 1));
-        Assert.Contains("cannot be in the future", error.Message);
-        Assert.Equal(GoLive, context.OpeningBalanceSets.Single().AsAtDate);
+        var saved = await Apply(context, null);
 
-        var committed = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
-        var locked = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.SaveAsync(committed.Id, new SaveOpeningBalanceSetDto
-            {
-                AsAtDate = new DateTime(2026, 7, 1), ConcurrencyToken = committed.ConcurrencyToken,
-                Entries = []
-            }, 1));
-        Assert.Contains("Explicitly reopen it", locked.Message);
-        Assert.Equal(GoLive, context.OpeningBalanceSets.Single().AsAtDate);
-    }
-
-    /// <summary>An omitted date leaves the stored one alone — the amounts-only panel must not blank it.</summary>
-    [Fact]
-    public async Task SavingAmountsWithoutADate_LeavesTheGoLiveDateWhereItWas()
-    {
-        await using var context = Context();
-        var accounts = await SeedAccountsAsync(context);
-        var service = new OpeningBalanceService(context);
-        var set = await Draft(service, GoLive, accounts.BankId, accounts.CapitalAccountId);
-
-        Assert.Equal(GoLive, set.AsAtDate);
-        Assert.Equal(GoLive, context.OpeningBalanceSets.Single().AsAtDate);
-        Assert.DoesNotContain(set.AuditEntries, a => a.Note != null && a.Note.Contains("Go-live date changed"));
-    }
-
-    /// <summary>
-    /// Reopening exists so the ACCOUNTANT can correct amounts, not so the baseline can be moved.
-    /// <para>
-    /// Reopen deliberately leaves <c>CommittedAt</c> populated, and
-    /// <see cref="FinanceDateRules.BaselineAsync"/> selects the active baseline on exactly that
-    /// column — so a reopened set is still the live cutover date while its amounts are being edited.
-    /// The draft-date correction added for a mistyped go-live date keyed off <c>IsCommitted</c>,
-    /// which reopen clears, and that combination let the ACTIVE date move to a day the amounts on
-    /// the sheet were never measured at. Every posting between the two dates changes meaning
-    /// immediately, before anything is recommitted — and the recommit that would have reconciled
-    /// them can itself fail on the records now sitting behind the new date, stranding the database
-    /// in that state.
-    /// </para>
-    /// </summary>
-    [Fact]
-    public async Task AReopenedBaseline_CanHaveItsAmountsCorrected_ButNotItsGoLiveDate()
-    {
-        await using var context = Context();
-        var accounts = await SeedAccountsAsync(context);
-        var service = new OpeningBalanceService(context);
-        var set = await Draft(service, GoLive, accounts.BankId, accounts.CapitalAccountId);
-        var committed = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
-
-        var reopened = await service.ReopenAsync(committed.Id, new ReopenOpeningBalanceSetDto
-        {
-            WarningAccepted = true, ConcurrencyToken = committed.ConcurrencyToken
-        }, 1);
-        Assert.False(reopened.IsCommitted);
-        // The old baseline is still the ACTIVE one — that is the whole point of keeping CommittedAt.
-        Assert.NotNull(reopened.CommittedAt);
-        Assert.Equal(GoLive, await FinanceDateRules.BaselineAsync(context, default));
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.SaveAsync(reopened.Id, new SaveOpeningBalanceSetDto
-            {
-                AsAtDate = new DateTime(2026, 8, 15), ConcurrencyToken = reopened.ConcurrencyToken,
-                Entries =
-                [
-                    new() { FinanceAccountId = accounts.BankId, DebitAmount = 1_000_000m },
-                    new() { FinanceAccountId = accounts.CapitalAccountId, CreditAmount = 1_000_000m }
-                ]
-            }, 1));
-        Assert.Contains("cannot be", error.Message);
-        Assert.Equal(GoLive, context.OpeningBalanceSets.Single().AsAtDate);
-        Assert.Equal(GoLive, await FinanceDateRules.BaselineAsync(context, default));
-
-        // The amounts, which are what reopening is for, still save — and the date is untouched.
-        var edited = await service.SaveAsync(reopened.Id, new SaveOpeningBalanceSetDto
-        {
-            ConcurrencyToken = reopened.ConcurrencyToken,
-            Entries =
-            [
-                new() { FinanceAccountId = accounts.BankId, DebitAmount = 1_250_000m },
-                new() { FinanceAccountId = accounts.CapitalAccountId, CreditAmount = 1_250_000m }
-            ]
-        }, 1);
-        Assert.Equal(GoLive, edited.AsAtDate);
-        Assert.Equal(1_250_000m, edited.TotalDebits);
+        Assert.Equal(GoLive, saved.GoLiveDate);
         Assert.Equal(GoLive, await FinanceDateRules.BaselineAsync(context, default));
     }
 
-    /// <summary>
-    /// Customer Deposits and Customer Receivables are worked out per booking from the customer's own
-    /// payments and possession date. A single aggregate opening figure belongs to no booking, so
-    /// nothing can ever clear it: give possession later and the receivable is raised for the FULL
-    /// sale value while the opening deposit sits untouched — the buyer is invoiced a second time for
-    /// money they already paid, and the sheet balances throughout. Commit is the last moment that
-    /// choice is reversible.
-    /// </summary>
     [Fact]
-    public async Task AnAggregateOpeningCustomerDepositOrReceivable_IsRefusedAtCommit()
+    public async Task TheFirstGoLiveDate_IsStoredAsADate_AndReturned()
+    {
+        await using var context = Context();
+
+        var saved = await Apply(context, GoLive.AddHours(15));
+
+        Assert.Equal(GoLive, saved.GoLiveDate);
+        Assert.Equal(GoLive, (await Wht(context).GetSettingsAsync()).GoLiveDate);
+    }
+
+    [Fact]
+    public async Task TheGoLiveDate_CanMoveEarlier_AndLaterOnlyWhenNothingIsBeforeTheNewDate()
     {
         await using var context = Context();
         var accounts = await SeedAccountsAsync(context);
-        var deposits = new FinanceAccount
+        await Apply(context, GoLive);
+        context.Expenses.Add(new Expense
         {
-            Name = "Customer Deposits", AccountHolderName = "Seven Ventures",
-            Type = FinanceAccountType.Liability, IsActive = true,
-            SystemRole = FinanceSystemAccountRole.CustomerDeposits
-        };
-        context.FinanceAccounts.Add(deposits);
+            FinanceAccountId = accounts.BankId, Amount = 40_000m, Category = "Rent", Date = GoLive.AddDays(10)
+        });
         await context.SaveChangesAsync();
 
-        var service = new OpeningBalanceService(context);
-        var set = await service.CreateAsync(GoLive, 1);
-        var draft = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
-        {
-            ConcurrencyToken = set.ConcurrencyToken,
-            Entries =
-            [
-                new() { FinanceAccountId = accounts.BankId, DebitAmount = 4_000_000m },
-                new() { FinanceAccountId = deposits.Id, CreditAmount = 4_000_000m }
-            ]
-        }, 1);
-        Assert.Equal(0m, draft.Difference);   // it balances, which is exactly why nothing else catches it
+        // Earlier always passes.
+        var earlier = await Apply(context, GoLive.AddDays(-20));
+        Assert.Equal(GoLive.AddDays(-20), earlier.GoLiveDate);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.CommitAsync(draft.Id, draft.ConcurrencyToken, 1));
-        Assert.Contains("Customer Deposits", error.Message);
-        Assert.Contains("receipts as payments", error.Message);
-        Assert.False(context.OpeningBalanceSets.Single().IsCommitted);
-        Assert.Equal(0m, context.FinanceAccounts.Single(a => a.Id == deposits.Id).OpeningBalance);
+        // Later is refused once the expense would fall before it...
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Apply(context, GoLive.AddDays(11)));
+        Assert.Equal(GoLive.AddDays(-20), await FinanceDateRules.BaselineAsync(context, default));
 
-        // Zero on that account is the supported cutover: the bank cash is brought over, and each
-        // booking's pre-go-live receipts are entered as Payment rows dated on or after go-live.
-        var fixedUp = await service.SaveAsync(draft.Id, new SaveOpeningBalanceSetDto
+        // ...and allowed up to the day of the expense itself.
+        var later = await Apply(context, GoLive.AddDays(10));
+        Assert.Equal(GoLive.AddDays(10), later.GoLiveDate);
+    }
+
+    [Fact]
+    public async Task WithNoGoLiveDate_ThereIsNoPostingLimit()
+    {
+        await using var context = Context();
+        var world = await SeedAsyncWithoutGoLive(context);
+        var service = Capital(context);
+
+        var recorded = await service.RecordTransactionAsync(world.PartnerId, new SaveCapitalTransactionDto
         {
-            ConcurrencyToken = draft.ConcurrencyToken,
-            Entries =
-            [
-                new() { FinanceAccountId = accounts.BankId, DebitAmount = 4_000_000m },
-                new() { FinanceAccountId = accounts.CapitalAccountId, CreditAmount = 4_000_000m }
-            ]
-        }, 1);
-        var committed = await service.CommitAsync(fixedUp.Id, fixedUp.ConcurrencyToken, 1);
-        Assert.True(committed.IsCommitted);
+            Type = CapitalTransactionType.Contribution, Amount = 500_000m,
+            Date = new DateTime(2025, 1, 5), FinanceAccountId = world.BankId
+        }, userId: 1);
+
+        Assert.Equal(new DateTime(2025, 1, 5), recorded.Date);
+    }
+
+    [Fact]
+    public async Task ChangingTheGoLiveDate_WritesOneHistoryRow_AndAnIdenticalResaveWritesNone()
+    {
+        await using var context = Context();
+        context.ActorUserId = 7;
+
+        await Apply(context, GoLive);
+        await Apply(context, GoLive);
+
+        var trail = await context.FinanceRecordAudits.AsNoTracking()
+            .Where(a => a.RecordType == nameof(FinanceSetting)).ToListAsync();
+        var row = Assert.Single(trail);
+        Assert.Equal(7, row.ActorUserId);
+        Assert.Contains("GoLiveDate", row.Changes);
+        Assert.Contains("2026-08-01", row.Changes);
     }
 
     // ── Helpers ──
 
-    private static async Task<OpeningBalanceSetDto> Draft(
-        OpeningBalanceService service, DateTime asAt, int bankId, int capitalId)
+    private static WhtService Wht(AppDbContext context) => new(context, new FinanceAccountService(context));
+
+    /// <summary>Saves the settings the way the page does: with the version it last read.</summary>
+    private static async Task<FinanceSettingsDto> Apply(AppDbContext context, DateTime? goLive)
     {
-        var set = await service.CreateAsync(asAt, 1);
-        return await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
+        var wht = Wht(context);
+        var current = await wht.GetSettingsAsync();
+        return await wht.UpdateSettingsAsync(new SaveFinanceSettingsDto
         {
-            ConcurrencyToken = set.ConcurrencyToken,
-            Entries =
-            [
-                new() { FinanceAccountId = bankId, DebitAmount = 1_000_000m },
-                new() { FinanceAccountId = capitalId, CreditAmount = 1_000_000m }
-            ]
-        }, 1);
+            FinancialYearStartMonth = 7, GoLiveDate = goLive, ConcurrencyToken = current.ConcurrencyToken
+        }, "admin");
     }
 
     private sealed record Accounts(int BankId, int CapitalAccountId, int PartnerId);
@@ -501,19 +375,22 @@ public sealed class FinanceCutoverBoundaryTests
 
     private sealed record World(int BankId, int PartnerId, int BookingId);
 
-    /// <summary>Accounts, a partner, a booking on a payment plan, and a COMMITTED 1 August baseline.</summary>
+    /// <summary>Accounts, a partner, a booking on a payment plan, and a 1 August go-live date.</summary>
     private static async Task<World> SeedAsync(AppDbContext context)
+    {
+        var world = await SeedAsyncWithoutGoLive(context);
+        // Set directly: UpdateSettingsAsync would refuse this world, because the booking it needs
+        // for the possession cases is dated before the go-live date. The date is all the posting
+        // rules read, so writing it keeps the two halves of the boundary independent.
+        await GoLiveSeed.SetAsync(context, GoLive);
+        await context.SaveChangesAsync();
+        return world;
+    }
+
+    private static async Task<World> SeedAsyncWithoutGoLive(AppDbContext context)
     {
         var accounts = await SeedAccountsAsync(context);
         var bookingId = await SeedBookingAsync(context);
-        // Committed directly: CommitAsync would now refuse this world, because the booking it needs
-        // for the possession cases is dated before the cutover. The baseline row is all the date
-        // rules read, so writing it is enough and keeps the two halves of the boundary independent.
-        context.OpeningBalanceSets.Add(new OpeningBalanceSet
-        {
-            AsAtDate = GoLive, IsCommitted = true, CommittedAt = DateTime.UtcNow, CommittedByUserId = 1
-        });
-        await context.SaveChangesAsync();
         return new World(accounts.BankId, accounts.PartnerId, bookingId);
     }
 
@@ -525,6 +402,10 @@ public sealed class FinanceCutoverBoundaryTests
         var context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         context.Database.EnsureCreated();
+        // The in-memory store generates no row version, so give the seeded settings row one to round-trip.
+        context.FinanceSettings.Single().RowVersion = [1, 2, 3, 4, 5, 6, 7, 8];
+        context.SaveChanges();
+        context.ChangeTracker.Clear();
         return context;
     }
 }

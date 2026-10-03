@@ -1,3 +1,5 @@
+import { financeApiError } from "../../api/financeAttachments.ts";
+
 type AccountFilters = {
   search: string;
   status: string;
@@ -17,6 +19,6 @@ export async function readFinanceAccountsPage<TAccount, TOverview>(
   if (filters.holderFilter) params.set("holder", filters.holderFilter);
   const endpoint = includeOverview ? "/api/finance/accounts/page-with-overview" : "/api/finance/accounts";
   const response = await request(`${endpoint}?${params}`);
-  if (!response.ok) throw new Error("Accounts could not be loaded.");
+  if (!response.ok) throw new Error(await financeApiError(response, "Accounts could not be loaded."));
   return await response.json();
 }

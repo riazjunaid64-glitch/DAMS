@@ -133,16 +133,13 @@ public sealed class SalaryPostingTests
             Amount = 100_000m, PayDate = PayDay, FinanceAccountId = world.BankId
         }, adminUserId: 1);
 
-        context.OpeningBalanceSets.Add(new OpeningBalanceSet
-        {
-            AsAtDate = PayDay, IsCommitted = true, CommittedAt = DateTime.UtcNow, CommittedByUserId = 1
-        });
+        await GoLiveSeed.SetAsync(context, PayDay);
         await context.SaveChangesAsync();
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             employees.UpdateSalaryAsync(salary.Id, new UpdateSalaryDto { PayDate = PayDay.AddDays(-10) }));
 
-        Assert.Contains("before the committed opening balance date", error.Message);
+        Assert.Contains("before the go-live date", error.Message);
         Assert.Equal(PayDay, (await context.Expenses.AsNoTracking().SingleAsync()).Date);
         Assert.Equal(PayDay, (await context.EmployeeSalaries.AsNoTracking().SingleAsync()).PayDate);
     }

@@ -22,7 +22,8 @@ namespace DAMS.Domain.Entities
         public int Id { get; set; }
 
         /// <summary>Entity name — <c>Expense</c>, <c>ManualRevenue</c>, <c>AssetPurchase</c>,
-        /// <c>WhtDeposit</c>. Not a foreign key: the row it describes may no longer exist, which is
+        /// <c>WhtDeposit</c>, <c>FinanceAccount</c> (its opening balance) or <c>FinanceSetting</c>
+        /// (the go-live date). Not a foreign key: the row it describes may no longer exist, which is
         /// exactly the case the trail is for.</summary>
         public string RecordType { get; set; } = string.Empty;
 

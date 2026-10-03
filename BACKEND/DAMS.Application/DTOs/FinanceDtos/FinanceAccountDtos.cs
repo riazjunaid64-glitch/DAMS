@@ -121,5 +121,16 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public int InactiveAccounts { get; set; }
         public decimal TotalBalance { get; set; }
         public List<FinanceHolderBalanceDto> HolderBalances { get; set; } = new();
+
+        /// <summary>Opening balances over every account, whatever the page filters: the debit and
+        /// credit sides. They differ when the opening figures do not balance.</summary>
+        public decimal OpeningDebitTotal { get; set; }
+        public decimal OpeningCreditTotal { get; set; }
+
+        /// <summary>The go-live date from Finance settings; null until it is set.</summary>
+        public DateTime? GoLiveDate { get; set; }
+
+        /// <summary>Every account holder's name, case-insensitively distinct and sorted.</summary>
+        public List<string> HolderNames { get; set; } = new();
     }
 }

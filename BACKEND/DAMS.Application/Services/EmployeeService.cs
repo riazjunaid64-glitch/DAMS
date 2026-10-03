@@ -390,7 +390,7 @@ namespace DAMS.Application.Services
             var payDate = dto.PayDate.Date;
             ValidatePayDate(payDate);
             // A salary writes a real Expense row, so it takes the same posting-date bounds as one
-            // entered on the finance screen — including "not before the committed opening balances",
+            // entered on the finance screen — including "not before the go-live date",
             // which the standalone check above cannot see.
             await FinanceDateRules.EnsureAsync(_context, payDate, "Pay date", CancellationToken.None);
             var (payMonth, payYear) = ResolvePayrollPeriod(dto.PayMonth, dto.PayYear, payDate);
@@ -567,8 +567,8 @@ namespace DAMS.Application.Services
                 ValidatePayDate(payDate);
                 // The edit moves the linked expense's date as well, so it takes the same bounds the
                 // generation path does. ValidatePayDate alone cannot see the opening-balance
-                // baseline, and a salary moved behind it is counted twice: once inside the committed
-                // opening figures and again as a movement on top of them.
+                // baseline, and a salary moved behind it is counted twice: once inside the opening
+                // figures and again as a movement on top of them.
                 await FinanceDateRules.EnsureAsync(_context, payDate, "Pay date", CancellationToken.None);
                 // Only the cash date. It deliberately no longer drags the payroll period with it:
                 // correcting "we actually paid on the 5th of September" must not silently move

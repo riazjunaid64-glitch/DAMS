@@ -5425,18 +5425,18 @@ public sealed class SqlServerProductionInvariantTests
     /// The cutover preflight, against a real database, because that is the only place its SQL exists.
     /// <para>
     /// It probes fifteen tables for a count and an earliest date, and it runs at exactly one moment in
-    /// the system's life — the go-live commit. An in-memory test proves the logic and nothing about
+    /// the system's life — the moment the go-live date is set or moved. An in-memory test proves the logic and nothing about
     /// the translation: if any of those probes cannot be turned into SQL, the failure surfaces as an
     /// exception during the client's cutover, which is the worst possible time to find out.
     /// </para>
     /// </summary>
     [SqlServerFact]
-    public async Task TheCutoverPreflight_RunsAsRealSql_AndBlocksACommitOverExistingHistory()
+    public async Task TheCutoverPreflight_RunsAsRealSql_AndBlocksAGoLiveDateOverExistingHistory()
     {
         await using var database = await SqlTestDatabase.CreateAsync();
         var options = Options(database.ConnectionString);
         var goLive = new DateTime(2026, 8, 1);
-        int bankId, capitalId;
+        int bankId;
 
         await using (var db = new AppDbContext(options))
         {
@@ -5446,38 +5446,27 @@ public sealed class SqlServerProductionInvariantTests
                 Name = "Cutover Bank Probe", AccountHolderName = "Seven Ventures",
                 Type = FinanceAccountType.Bank, IsActive = true
             };
-            var capital = new FinanceAccount
-            {
-                Name = "Cutover Capital Probe", AccountHolderName = "Partner One",
-                Type = FinanceAccountType.Capital, IsActive = true
-            };
-            db.FinanceAccounts.AddRange(bank, capital);
+            db.FinanceAccounts.Add(bank);
             await db.SaveChangesAsync();
             bankId = bank.Id;
-            capitalId = capital.Id;
         }
 
         // Clean database, nothing behind the cutover: every probe must translate and come back empty.
         await using (var db = new AppDbContext(options))
         {
             Assert.Empty(await FinanceDateRules.PreBaselineEventsAsync(db, goLive, default));
-            var service = new OpeningBalanceService(db);
-            var set = await service.CreateAsync(goLive, 1);
-            set = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
+            var wht = new WhtService(db, new FinanceAccountService(db));
+            var current = await wht.GetSettingsAsync();
+            var saved = await wht.UpdateSettingsAsync(new SaveFinanceSettingsDto
             {
-                ConcurrencyToken = set.ConcurrencyToken,
-                Entries =
-                [
-                    new() { FinanceAccountId = bankId, DebitAmount = 1_000_000m },
-                    new() { FinanceAccountId = capitalId, CreditAmount = 1_000_000m }
-                ]
-            }, 1);
-            var committed = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
-            Assert.True(committed.IsCommitted);
+                FinancialYearStartMonth = 7, GoLiveDate = goLive, ConcurrencyToken = current.ConcurrencyToken
+            }, "admin");
+            Assert.Equal(goLive, saved.GoLiveDate);
+            Assert.Equal(goLive, await FinanceDateRules.BaselineAsync(db, default));
         }
 
-        // Now put a July expense in — the pilot-month case — and prove the reopened set cannot be
-        // recommitted over it. The probe has to find it and name the date.
+        // Now put a July expense in — the pilot-month case — and prove a later date cannot be set
+        // over it. The probe has to find it and name the date.
         await using (var db = new AppDbContext(options))
         {
             db.Expenses.Add(new Expense
@@ -5492,14 +5481,14 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal(1, found.Count);
             Assert.Equal(new DateTime(2026, 7, 25), found.Earliest);
 
-            var service = new OpeningBalanceService(db);
-            var current = await service.GetCurrentAsync();
-            var reopened = await service.ReopenAsync(current!.Id, new ReopenOpeningBalanceSetDto
-            {
-                WarningAccepted = true, ConcurrencyToken = current.ConcurrencyToken
-            }, 1);
+            var service = new WhtService(db, new FinanceAccountService(db));
+            var current = await service.GetSettingsAsync();
             var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                service.CommitAsync(reopened.Id, reopened.ConcurrencyToken, 1));
+                service.UpdateSettingsAsync(new SaveFinanceSettingsDto
+                {
+                    FinancialYearStartMonth = 7, GoLiveDate = goLive.AddDays(1),
+                    ConcurrencyToken = current.ConcurrencyToken
+                }, "admin"));
             Assert.Contains("1 expenses", error.Message);
             Assert.Contains("25 Jul 2026", error.Message);
         }

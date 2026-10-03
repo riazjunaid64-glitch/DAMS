@@ -69,7 +69,7 @@ public sealed class AccountTransactionHistoryPerformanceTests
         var account = new FinanceAccount { Name = "Bank", Type = FinanceAccountType.Bank, AccountHolderName = "DAMS", OpeningBalance = 500m };
         var project = new Project { ProjectName = "Project A" };
         context.AddRange(account, project);
-        context.OpeningBalanceSets.Add(new OpeningBalanceSet { AsAtDate = day, IsCommitted = true, CommittedAt = day });
+        await GoLiveSeed.SetAsync(context, day);
         await context.SaveChangesAsync();
         context.ManualRevenues.AddRange(
             new ManualRevenue { FinanceAccountId = account.Id, ProjectId = project.Id, Date = day.AddDays(-1), Amount = 999m, RevenueType = "Legacy before cutover" },

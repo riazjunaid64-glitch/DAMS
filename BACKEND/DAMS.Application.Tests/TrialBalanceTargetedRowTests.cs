@@ -83,10 +83,7 @@ public sealed class TrialBalanceTargetedRowTests
         // figure and the P&L accumulates from the baseline rather than from the SQL floor — and the
         // targeted row has to reach the same cell the report does under both rules.
         var baseline = Day.AddDays(-10);
-        context.OpeningBalanceSets.Add(new OpeningBalanceSet
-        {
-            AsAtDate = baseline, IsCommitted = true, CommittedAt = baseline.ToUniversalTime()
-        });
+        await GoLiveSeed.SetAsync(context, baseline);
         await context.SaveChangesAsync();
         var finance = Finance(context);
 
