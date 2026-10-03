@@ -1,32 +1,9 @@
-import { DEFAULT_PAGE_SIZE } from "../../../components/ui/pageItems.ts";
 import { formatPickerDate, parseIso } from "../../../components/ui/pickerFormat.ts";
+import { countOf } from "../lists.ts";
 import { formatRs, type WhtDeposit, type WhtVendorLine } from "../whtTypes.ts";
 
-/** Twenty rows a page on desktop; a phone shows twenty more with each Load more. */
-export const PAGE_SIZE = DEFAULT_PAGE_SIZE;
-
-const counted = (count: number, one: string, many: string) => `${count.toLocaleString("en-PK")} ${count === 1 ? one : many}`;
-
-/** "1 payment", "18 payments": the period line under the cards. */
-export const paymentsText = (count: number) => counted(count, "payment", "payments");
-
-/** "1 supplier", "6 suppliers". */
-export const suppliersText = (count: number) => counted(count, "supplier", "suppliers");
-
-/**
- * The page a list is really on. Both lists come back whole and are cut here, so after a delete empties
- * the last page the stored page number is past the end; this steps it back to the new last page.
- */
-export function clampPage(page: number, total: number, pageSize = PAGE_SIZE): number {
-  const last = Math.max(1, Math.ceil(total / pageSize));
-  return Math.min(Math.max(1, page), last);
-}
-
-/** The rows of one desktop page. */
-export function pageRows<T>(rows: readonly T[], page: number, pageSize = PAGE_SIZE): T[] {
-  const current = clampPage(page, rows.length, pageSize);
-  return rows.slice((current - 1) * pageSize, current * pageSize);
-}
+/** "1 supplier", "6 suppliers": the period line under the cards. */
+export const suppliersText = (count: number) => countOf(count, "supplier", "suppliers");
 
 const day = (value: string) => formatPickerDate(value.slice(0, 10));
 

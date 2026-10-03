@@ -1,6 +1,7 @@
 import { Button, Notice, StatCard, type StatCardState } from "../../../components/ui";
+import { paymentsText } from "../lists.ts";
 import { formatRs, type WhtPayableSummary } from "../whtTypes.ts";
-import { paymentsText, suppliersText } from "./rules.ts";
+import { suppliersText } from "./rules.ts";
 
 type CardsProps = {
   /** All-time figures straight from the server; the screen never adds them up itself. */

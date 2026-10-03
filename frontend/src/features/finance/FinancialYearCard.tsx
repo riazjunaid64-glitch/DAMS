@@ -7,14 +7,19 @@ import { MONTHS, type FinanceSettings } from "./whtTypes.ts";
 
 const MONTH_OPTIONS = MONTHS.map((name, index) => ({ value: String(index + 1), label: name }));
 
-type Props = { settings: FinanceSettings; onSaved: () => Promise<void> };
+type Props = {
+  settings: FinanceSettings;
+  onSaved: () => void;
+  /** The settings are being read again: Save waits for the new version rather than send a stale one. */
+  disabled?: boolean;
+};
 
 /**
  * Finance settings > Financial year: the month the year starts in and the go-live date, the first day
  * DAMS records movements for. Once a date is saved it cannot be emptied, and moving it asks first;
  * the server refuses a later date while anything is recorded before it.
  */
-export function FinancialYearCard({ settings, onSaved }: Props) {
+export function FinancialYearCard({ settings, onSaved, disabled = false }: Props) {
   const toast = useToast();
   const savedGoLive = serverDay(settings.goLiveDate);
   const [month, setMonth] = useState(String(settings.financialYearStartMonth));
@@ -40,22 +45,23 @@ export function FinancialYearCard({ settings, onSaved }: Props) {
         concurrencyToken: settings.concurrencyToken,
       });
       toast.success("Financial year saved.");
-      await onSaved();
+      onSaved();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "The financial year could not be saved.");
+    } finally {
       setConfirming(false);
       setSaving(false);
     }
   };
 
   const submit = () => {
-    if (saving || missing) return;
+    if (saving || missing || disabled) return;
     if (changed && savedGoLive !== null) setConfirming(true);
     else void save();
   };
 
   return (
-    <Card title="Financial year" className="max-w-xl">
+    <Card title="Financial year">
       <form noValidate onSubmit={(event) => { event.preventDefault(); submit(); }} className="flex flex-col gap-4">
         {error && <Notice tone="red" role="alert" title={error} />}
         <Dropdown
@@ -77,7 +83,7 @@ export function FinancialYearCard({ settings, onSaved }: Props) {
           helper="Opening balances are the position at the start of this day."
         />
         <div>
-          <Button type="submit" loading={saving && !confirming} disabled={saving || missing}>Save</Button>
+          <Button type="submit" loading={saving && !confirming} disabled={saving || missing || disabled}>Save</Button>
         </div>
       </form>
       <ConfirmDialog

@@ -839,6 +839,26 @@ public sealed class WithholdingTaxTests
     }
 
     [Fact]
+    public async Task ANewCategory_NamedLikeAnExistingOne_IsRefusedInWordsAboutTheName()
+    {
+        // The screen has no Code field any more: a new category's code is made from its name.
+        await using var context = Seeded();
+        var categories = new ExpenseCategoryService(context);
+
+        var repeated = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            categories.CreateAsync(new SaveExpenseCategoryDto { Name = "Cement", Code = "" }, 1));
+        Assert.Equal("An expense category with this name already exists.", repeated.Message);
+
+        // "CEMENT!" is another name, but it makes the same code as "Cement".
+        var lookalike = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            categories.CreateAsync(new SaveExpenseCategoryDto { Name = "CEMENT!", Code = "" }, 1));
+        Assert.Equal("Another expense category already has a name that looks the same. Change the name.", lookalike.Message);
+
+        var created = await categories.CreateAsync(new SaveExpenseCategoryDto { Name = "Wood & timber", Code = "", FilerRate = 5m, NonFilerRate = 10m, DisplayOrder = 900 }, 1);
+        Assert.Equal("wood_timber", created.Code);
+    }
+
+    [Fact]
     public async Task AnInactiveCategoryCannotBeNewlyChosen_ButStaysValidOnTheExpenseThatUsedIt()
     {
         await using var context = Seeded();
@@ -907,6 +927,54 @@ public sealed class WithholdingTaxTests
 
         var adopted = await context.Expenses.AsNoTracking().SingleAsync(e => e.Amount == 60_000m);
         Assert.Equal(created.Id, adopted.VendorId);
+    }
+
+    // ── The vendor list pages with a total ──────────────────────────────────────
+
+    [Fact]
+    public async Task TheVendorList_CountsEveryMatch_OnEveryPage_AndFiltersByFilerStatus()
+    {
+        await using var context = Seeded();
+        // ABC Traders (a filer) is seeded; 24 more make 25. Every third is a non-filer (8 of them),
+        // and every fifth is inactive (5 of them).
+        for (var id = 2; id <= 25; id++)
+        {
+            context.Vendors.Add(new Vendor
+            {
+                Id = id, Name = $"Supplier {id:00}", IsActive = id % 5 != 0,
+                FilerStatus = (id % 3) switch { 0 => FilerStatus.Filer, 1 => FilerStatus.NonFiler, _ => FilerStatus.Unknown }
+            });
+        }
+        await context.SaveChangesAsync();
+        var vendors = new VendorService(context);
+
+        var first = await vendors.GetPageAsync(null, false, 0, 20);
+        Assert.Equal(20, first.Items.Count);
+        Assert.True(first.HasMore);
+        Assert.Equal(25, first.TotalCount);
+
+        // A later page carries the total too: the settings list jumps straight to page 2.
+        var second = await vendors.GetPageAsync(null, false, 20, 20);
+        Assert.Equal(5, second.Items.Count);
+        Assert.False(second.HasMore);
+        Assert.Equal(25, second.TotalCount);
+        // Active first, so the five inactive vendors are the last page.
+        Assert.All(first.Items, v => Assert.True(v.IsActive));
+        Assert.All(second.Items, v => Assert.False(v.IsActive));
+
+        var nonFilers = await vendors.GetPageAsync(null, false, 0, 20, FilerStatus.NonFiler);
+        Assert.Equal(8, nonFilers.TotalCount);
+        Assert.Equal(8, nonFilers.Items.Count);
+        Assert.All(nonFilers.Items, v => Assert.Equal(FilerStatus.NonFiler, v.FilerStatus));
+
+        // "Supplier 1" matches Supplier 10 to 19; of those, 10, 13, 16 and 19 are non-filers.
+        Assert.Equal(10, (await vendors.GetPageAsync("Supplier 1", false, 0, 20)).TotalCount);
+        Assert.Equal(4, (await vendors.GetPageAsync("Supplier 1", false, 0, 20, FilerStatus.NonFiler)).TotalCount);
+
+        var active = await vendors.GetPageAsync(null, true, 0, 20);
+        Assert.Equal(20, active.TotalCount);
+        Assert.False(active.HasMore);
+        Assert.All(active.Items, v => Assert.True(v.IsActive));
     }
 
     // ── An edit that cannot move the tax must not move the tax ──────────────────

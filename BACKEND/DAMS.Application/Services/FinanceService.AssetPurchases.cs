@@ -314,7 +314,7 @@ namespace DAMS.Application.Services
                 // the managed rate table, so there is no history to keep editable and no reason to
                 // let a taxable supplier be paid through a head with no rate behind it.
                 throw new InvalidOperationException(
-                    "Choose a category from the list. If the head you need is missing, add it under Finance ▸ Settings ▸ Expense heads & rates.");
+                    "Choose a category from the list. If the head you need is missing, add it under Finance settings > Expense categories.");
             }
 
             if (dto.VendorId.HasValue)

@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type FormEvent } from "react";
-import { DatePicker, Dropdown, Modal, Notice, TextField, useToast } from "../../../components/ui";
+import { DatePicker, Dropdown, Modal, Notice, OptionalLabel, TextField, useToast } from "../../../components/ui";
 import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { capitalApi } from "./api.ts";
 import { capitalAccountChoices, serverDay } from "./rules.ts";
@@ -18,7 +18,6 @@ const fieldsOf = (partner: Partner): Fields => ({
   exitedDate: serverDay(partner.exitedDate) ?? "",
 });
 
-const optional = (label: string) => <>{label} <span className="font-normal text-ink-muted">(optional)</span></>;
 const orNull = (value: string) => value.trim() || null;
 const pair = "grid gap-4 md:grid-cols-2";
 
@@ -92,11 +91,11 @@ export function PartnerFormDialog({ partner, partners, accounts, accountsError, 
         {accountsError && <Notice tone="orange" role="alert" title={accountsError} />}
         <TextField label="Name" required maxLength={200} disabled={saving} value={fields.name} onChange={(event) => set({ name: event.target.value })} />
         <div className={pair}>
-          <TextField label={optional("CNIC")} maxLength={20} disabled={saving} value={fields.cnic} onChange={(event) => set({ cnic: event.target.value })} />
-          <TextField label={optional("NTN")} maxLength={30} disabled={saving} value={fields.ntn} onChange={(event) => set({ ntn: event.target.value })} />
+          <TextField label={<OptionalLabel>CNIC</OptionalLabel>} maxLength={20} disabled={saving} value={fields.cnic} onChange={(event) => set({ cnic: event.target.value })} />
+          <TextField label={<OptionalLabel>NTN</OptionalLabel>} maxLength={30} disabled={saving} value={fields.ntn} onChange={(event) => set({ ntn: event.target.value })} />
         </div>
         <Dropdown
-          label={optional("Capital account")}
+          label={<OptionalLabel>Capital account</OptionalLabel>}
           disabled={saving}
           placeholder="Select account"
           options={[{ value: "", label: "Select account" }, ...choices]}
@@ -105,8 +104,8 @@ export function PartnerFormDialog({ partner, partners, accounts, accountsError, 
           helper={noAccounts ? "Add a Capital account in Manage accounts first." : undefined}
         />
         <div className="grid grid-cols-2 gap-4">
-          <DatePicker label={optional("Joined date")} disabled={saving} value={fields.joinedDate} onChange={(joinedDate) => set({ joinedDate })} />
-          <DatePicker label={optional("Exited date")} disabled={saving} min={fields.joinedDate || undefined} error={exitError} value={fields.exitedDate} onChange={(exitedDate) => set({ exitedDate })} />
+          <DatePicker label={<OptionalLabel>Joined date</OptionalLabel>} disabled={saving} value={fields.joinedDate} onChange={(joinedDate) => set({ joinedDate })} />
+          <DatePicker label={<OptionalLabel>Exited date</OptionalLabel>} disabled={saving} min={fields.joinedDate || undefined} error={exitError} value={fields.exitedDate} onChange={(exitedDate) => set({ exitedDate })} />
         </div>
       </form>
     </Modal>

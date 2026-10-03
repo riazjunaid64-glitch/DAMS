@@ -38,6 +38,19 @@ describe("filer statuses", () => {
   });
 });
 
+describe("finance settings statuses", () => {
+  it("colours a retired category grey and the tax-rates check green or orange", () => {
+    expect(statusTone("Retired")).toBe("grey");
+    expect(statusTone("Checked by accountant")).toBe("green");
+    expect(statusTone("Not checked yet")).toBe("orange");
+  });
+  it("writes them as the board does", () => {
+    expect(statusLabel("Retired")).toBe("Retired");
+    expect(statusLabel("Checked by accountant")).toBe("Checked by accountant");
+    expect(statusLabel("Not checked yet")).toBe("Not checked yet");
+  });
+});
+
 describe("booking statuses", () => {
   it("colours every booking, installment, commission, rebate and refund status", () => {
     const expected: Record<string, string> = {

@@ -338,9 +338,9 @@ namespace DAMS.Application.DTOs.FinanceDtos
     }
 
     /// <summary>
-    /// One page of rows. <see cref="TotalCount"/> is optional on purpose: vendors, finance
-    /// accounts, rules and customer documents page with <see cref="HasMore"/> and leave the
-    /// total unset. Partners, commissions and rebates fill it on the first page or on request.
+    /// One page of rows. <see cref="TotalCount"/> is optional on purpose: finance accounts, rules
+    /// and customer documents page with <see cref="HasMore"/> and leave the total unset. Partners,
+    /// commissions and rebates fill it on the first page or on request; vendors on every page.
     /// </summary>
     public class PagedResult<T>
     {

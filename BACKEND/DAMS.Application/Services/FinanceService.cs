@@ -1856,7 +1856,7 @@ namespace DAMS.Application.Services
                 // taxable supplier with nothing withheld.
                 if (expense.Id == 0 || expense.CategoryId != null)
                     throw new InvalidOperationException(
-                        "Choose an expense category from the list. If the head you need is missing, add it under Finance ▸ Settings ▸ Expense heads & rates.");
+                        "Choose an expense category from the list. If the head you need is missing, add it under Finance settings > Expense categories.");
                 if (string.IsNullOrWhiteSpace(dto.Category))
                     throw new InvalidOperationException("Category is required.");
                 expense.Category = dto.Category.Trim();

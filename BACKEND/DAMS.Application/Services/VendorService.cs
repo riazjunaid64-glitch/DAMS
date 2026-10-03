@@ -3,6 +3,7 @@ using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,7 +16,7 @@ namespace DAMS.Application.Services
         public VendorService(AppDbContext context) => _context = context;
 
         public async Task<PagedResult<VendorDto>> GetPageAsync(
-            string? search, bool activeOnly, int skip, int take, CancellationToken cancellationToken = default)
+            string? search, bool activeOnly, int skip, int take, FilerStatus? filerStatus = null, CancellationToken cancellationToken = default)
         {
             var query = _context.Vendors.AsNoTracking().AsQueryable();
             if (activeOnly) query = query.Where(v => v.IsActive);
@@ -27,11 +28,15 @@ namespace DAMS.Application.Services
                     || (v.Cnic != null && v.Cnic.Contains(term))
                     || (v.Phone != null && v.Phone.Contains(term)));
             }
+            if (filerStatus.HasValue) query = query.Where(v => v.FilerStatus == filerStatus.Value);
 
+            // Counted on every page, not only the first: the settings list jumps straight to any
+            // page number, and each one needs "Showing 41–60 of 64".
+            var total = await query.CountAsync(cancellationToken);
             var (yearStart, yearEnd) = await CurrentYearWindowAsync(cancellationToken);
             var rows = await Project(query.OrderByDescending(v => v.IsActive).ThenBy(v => v.Name), yearStart, yearEnd)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
-            return new PagedResult<VendorDto> { Items = rows.Take(take).ToList(), HasMore = rows.Count > take };
+            return PagedResult<VendorDto>.Page(rows, take, total);
         }
 
         public Task<List<VendorOptionDto>> GetOptionsAsync(bool includeInactive, CancellationToken cancellationToken = default) =>

@@ -2,9 +2,9 @@
 export type FilerStatus = "Unknown" | "Filer" | "NonFiler";
 
 export const FILER_STATUSES: [FilerStatus, string][] = [
-  ["Filer", "Filer (on the ATL)"],
+  ["Filer", "Filer"],
   ["NonFiler", "Non-filer"],
-  ["Unknown", "Unknown — withheld as non-filer"],
+  ["Unknown", "Unknown (taxed as non-filer)"],
 ];
 
 export interface ExpenseCategory {
@@ -23,6 +23,21 @@ export interface ExpenseCategory {
   createdAt: string;
   updatedAt: string | null;
   concurrencyToken: string;
+}
+
+/** What Add / Edit category sends. The code is made from the name on create and never changes after. */
+export interface SaveExpenseCategory {
+  name: string;
+  code: string;
+  description: string | null;
+  isWhtApplicable: boolean;
+  filerRate: number;
+  nonFilerRate: number;
+  annualThreshold: number;
+  taxSection: string | null;
+  displayOrder: number;
+  isActive: boolean;
+  concurrencyToken: string | null;
 }
 
 export interface VendorOption {
@@ -45,6 +60,20 @@ export interface Vendor extends VendorOption {
   createdAt: string;
   updatedAt: string | null;
   concurrencyToken: string;
+}
+
+/** What Add / Edit vendor sends. `markFilerStatusChecked` stamps "checked now" on the vendor. */
+export interface SaveVendor {
+  name: string;
+  ntn: string | null;
+  cnic: string | null;
+  phone: string | null;
+  address: string | null;
+  notes: string | null;
+  filerStatus: FilerStatus;
+  markFilerStatusChecked: boolean;
+  isActive: boolean;
+  concurrencyToken: string | null;
 }
 
 /** Live preview returned while the expense form is being filled in. */

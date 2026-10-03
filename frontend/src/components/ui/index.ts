@@ -26,7 +26,7 @@ export { Pagination, LoadMore, type PaginationProps, type LoadMoreProps } from "
 export { DEFAULT_PAGE_SIZE, pageItems, pageRange } from "./pageItems.ts";
 
 // 06 Form fields
-export { FieldShell, type FieldBaseProps } from "./FieldShell.tsx";
+export { FieldShell, OptionalLabel, type FieldBaseProps } from "./FieldShell.tsx";
 export { TextField, NumberField, type TextFieldProps, type NumberFieldProps } from "./TextField.tsx";
 export { DatePicker, type DatePickerProps } from "./DatePicker.tsx";
 export { TimePicker, type TimePickerProps } from "./TimePicker.tsx";

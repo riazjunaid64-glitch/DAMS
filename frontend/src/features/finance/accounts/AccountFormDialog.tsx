@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent } from "react";
-import { Button, ConfirmDialog, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
+import { Button, ConfirmDialog, Dropdown, Modal, Notice, NumberField, OptionalLabel, TextField, useToast } from "../../../components/ui";
 import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { accountsApi } from "./api.ts";
 import { TYPE_OPTIONS, openingChangeMessage, parseOpening, takesNoTypedOpening, typeValue, type Account } from "./accountGroups.ts";
@@ -18,7 +18,6 @@ const fieldsOf = (account: Account): Fields => ({
   description: account.description ?? "",
 });
 
-const optional = (label: string) => <>{label} <span className="font-normal text-ink-muted">(optional)</span></>;
 const orNull = (value: string) => value.trim() || null;
 const pair = "grid gap-4 md:grid-cols-2";
 
@@ -139,10 +138,10 @@ export function AccountFormDialog({ account, goLiveDate, onClose, onSaved }: Pro
                 </Button>
               )}
             </div>
-            <TextField label={optional("Ledger code")} maxLength={30} disabled={saving || system} value={fields.ledgerCode} onChange={(event) => set({ ledgerCode: event.target.value })} />
+            <TextField label={<OptionalLabel>Ledger code</OptionalLabel>} maxLength={30} disabled={saving || system} value={fields.ledgerCode} onChange={(event) => set({ ledgerCode: event.target.value })} />
           </div>
-          <TextField label={optional("Bank or wallet name")} maxLength={150} disabled={saving} value={fields.bankName} onChange={(event) => set({ bankName: event.target.value })} />
-          <TextField label={optional("Description")} maxLength={1000} disabled={saving} value={fields.description} onChange={(event) => set({ description: event.target.value })} />
+          <TextField label={<OptionalLabel>Bank or wallet name</OptionalLabel>} maxLength={150} disabled={saving} value={fields.bankName} onChange={(event) => set({ bankName: event.target.value })} />
+          <TextField label={<OptionalLabel>Description</OptionalLabel>} maxLength={1000} disabled={saving} value={fields.description} onChange={(event) => set({ description: event.target.value })} />
         </form>
       </Modal>
       <ConfirmDialog

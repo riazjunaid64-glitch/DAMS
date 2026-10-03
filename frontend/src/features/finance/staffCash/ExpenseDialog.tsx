@@ -1,6 +1,6 @@
 import { useId, useState, type FormEvent } from "react";
 import ExpenseWhtFields from "../../../components/ExpenseWhtFields.tsx";
-import { DatePicker, DialogTitle, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
+import { DatePicker, DialogTitle, Dropdown, Modal, Notice, NumberField, OptionalLabel, TextField, useToast } from "../../../components/ui";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
 import type { useIdempotencyKeys } from "../../../lib/idempotency.ts";
 import { categoryLabel, vendorLabel } from "../home/options.ts";
@@ -25,7 +25,6 @@ type Fields = {
   wht: WhtFormValue;
 };
 
-const optional = (label: string) => <>{label} <span className="font-normal normal-case tracking-normal text-ink-muted">(optional)</span></>;
 
 type Props = {
   holder: Holder;
@@ -152,7 +151,7 @@ export function ExpenseDialog({ holder, categories, vendors, projects, lookupsEr
         />
         {/* A registered supplier is already named by the picker; only a one-off payee needs typing. */}
         {oneOff && (
-          <TextField className="order-6 md:order-4 md:col-span-2" label={optional("Payee name")} maxLength={200} disabled={saving} value={fields.vendor} onChange={(event) => set({ vendor: event.target.value })} />
+          <TextField className="order-6 md:order-4 md:col-span-2" label={<OptionalLabel>Payee name</OptionalLabel>} maxLength={200} disabled={saving} value={fields.vendor} onChange={(event) => set({ vendor: event.target.value })} />
         )}
         <NumberField className="order-2 md:order-5" label="Gross amount" required prefix="Rs" decimals={2} disabled={saving} value={fields.amount} onChange={(value) => set({ amount: value })} />
         <DatePicker
@@ -165,7 +164,7 @@ export function ExpenseDialog({ holder, categories, vendors, projects, lookupsEr
           value={fields.date}
           onChange={(date) => { set({ date }); setDateError(undefined); }}
         />
-        <TextField className="order-7 md:col-span-2" label={optional("What it was for")} maxLength={1000} disabled={saving} value={fields.description} onChange={(event) => set({ description: event.target.value })} />
+        <TextField className="order-7 md:col-span-2" label={<OptionalLabel>What it was for</OptionalLabel>} maxLength={1000} disabled={saving} value={fields.description} onChange={(event) => set({ description: event.target.value })} />
         {fields.categoryId && (
           <div className="order-8 md:col-span-2">
             <ExpenseWhtFields

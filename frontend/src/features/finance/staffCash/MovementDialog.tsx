@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type FormEvent } from "react";
-import { DatePicker, DialogTitle, Dropdown, Modal, Notice, NumberField, TextArea, TextField, useToast } from "../../../components/ui";
+import { DatePicker, DialogTitle, Dropdown, Modal, Notice, NumberField, OptionalLabel, TextArea, TextField, useToast } from "../../../components/ui";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
 import type { useIdempotencyKeys } from "../../../lib/idempotency.ts";
 import { RecordProof } from "../home/proof.tsx";
@@ -33,7 +33,6 @@ function fieldsOf(holder: Holder, intent: MovementIntent, movement: HistoryItem 
   };
 }
 
-const optional = (label: string) => <>{label} <span className="font-normal normal-case tracking-normal text-ink-muted">(optional)</span></>;
 
 type Props = {
   holder: Holder;
@@ -149,8 +148,8 @@ export function MovementDialog({ holder, intent, movement, cashAccounts, account
           value={fields.accountId}
           onChange={(accountId) => set({ accountId })}
         />
-        <TextField label={optional("Reference")} maxLength={200} disabled={saving} value={fields.reference} onChange={(event) => set({ reference: event.target.value })} />
-        <TextArea label={optional("Note")} rows={3} maxLength={1000} disabled={saving} value={fields.note} onChange={(event) => set({ note: event.target.value })} />
+        <TextField label={<OptionalLabel>Reference</OptionalLabel>} maxLength={200} disabled={saving} value={fields.reference} onChange={(event) => set({ reference: event.target.value })} />
+        <TextArea label={<OptionalLabel>Note</OptionalLabel>} rows={3} maxLength={1000} disabled={saving} value={fields.note} onChange={(event) => set({ note: event.target.value })} />
         <RecordProof
           saved={movement?.attachment ?? null}
           selected={file}
