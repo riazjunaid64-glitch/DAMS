@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent } from "react";
-import { AttachProof, DatePicker, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
+import { AttachProof, DatePicker, Dropdown, Modal, Notice, NumberField, OptionalLabel, TextField, useToast } from "../../../components/ui";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
 import type { useIdempotencyKeys } from "../../../lib/idempotency.ts";
 import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
@@ -133,8 +133,8 @@ export function TransactionDialog({ partner, cashAccounts, accountsError, keys, 
           />
         )}
         <div className="grid gap-4 md:grid-cols-2">
-          <TextField label={<>Reference <span className="font-normal text-ink-muted">(optional)</span></>} maxLength={200} disabled={saving} value={fields.reference} onChange={(event) => set({ reference: event.target.value })} />
-          <TextField label={<>Note <span className="font-normal text-ink-muted">(optional)</span></>} maxLength={1000} disabled={saving} value={fields.note} onChange={(event) => set({ note: event.target.value })} />
+          <TextField label={<OptionalLabel>Reference</OptionalLabel>} maxLength={200} disabled={saving} value={fields.reference} onChange={(event) => set({ reference: event.target.value })} />
+          <TextField label={<OptionalLabel>Note</OptionalLabel>} maxLength={1000} disabled={saving} value={fields.note} onChange={(event) => set({ note: event.target.value })} />
         </div>
         <AttachProof
           label="Attachment"

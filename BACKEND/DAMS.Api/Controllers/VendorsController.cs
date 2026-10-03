@@ -1,6 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
+using DAMS.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -23,11 +24,12 @@ namespace DAMS.Api.Controllers
             [FromQuery] bool activeOnly = false,
             [FromQuery] int skip = 0,
             [FromQuery] int take = 100,
+            [FromQuery] FilerStatus? filerStatus = null,
             CancellationToken cancellationToken = default)
         {
             if (skip < 0) skip = 0;
             take = Math.Clamp(take, 1, 200);
-            return Ok(await _vendors.GetPageAsync(search, activeOnly, skip, take, cancellationToken));
+            return Ok(await _vendors.GetPageAsync(search, activeOnly, skip, take, filerStatus, cancellationToken: cancellationToken));
         }
 
         [HttpGet("options")]

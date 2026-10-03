@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent, type ReactNode } from "react";
-import { Dropdown, Modal, Notice, TextArea, TextField, useToast } from "../../components/ui";
+import { Dropdown, Modal, Notice, OptionalLabel, TextArea, TextField, useToast } from "../../components/ui";
 import { commissionRebateApi } from "./api.ts";
 import { PARTNER_TYPES, isValidEmail } from "./forms.ts";
 import type { Partner } from "./types.ts";
@@ -23,7 +23,6 @@ const fieldsOf = (partner: Partner): Fields => ({
   accountNumber: partner.accountNumber ?? "", iban: partner.iban ?? "", notes: partner.notes ?? "",
 });
 
-const optional = (label: string): ReactNode => <>{label} <span className="font-normal text-ink-muted">(optional)</span></>;
 const orNull = (value: string) => value.trim() || null;
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
@@ -136,34 +135,34 @@ export function PartnerFormDialog({ partner, onClose, onSaved }: Props) {
           <div className={pair}>
             {partner
               ? text("internalCode", "Partner code", 80, { required: true })
-              : text("internalCode", optional("Partner code"), 80, { placeholder: "Made automatically" })}
-            {text("contactPerson", optional("Contact person"), 200)}
+              : text("internalCode", <OptionalLabel>Partner code</OptionalLabel>, 80, { placeholder: "Made automatically" })}
+            {text("contactPerson", <OptionalLabel>Contact person</OptionalLabel>, 200)}
           </div>
           <div className={pair}>
-            {text("phone", optional("Phone"), 50, { type: "tel" })}
-            {text("email", optional("Email"), 200, { type: "email", error: emailError })}
+            {text("phone", <OptionalLabel>Phone</OptionalLabel>, 50, { type: "tel" })}
+            {text("email", <OptionalLabel>Email</OptionalLabel>, 200, { type: "email", error: emailError })}
           </div>
-          <TextArea label={optional("Address")} rows={3} maxLength={500} disabled={saving} value={fields.address} onChange={(event) => set({ address: event.target.value })} />
+          <TextArea label={<OptionalLabel>Address</OptionalLabel>} rows={3} maxLength={500} disabled={saving} value={fields.address} onChange={(event) => set({ address: event.target.value })} />
         </Group>
         <Group title="Tax">
           <div className={pair}>
-            {text("cnic", optional("CNIC"), 50)}
-            {text("ntn", optional("NTN / tax number"), 80)}
+            {text("cnic", <OptionalLabel>CNIC</OptionalLabel>, 50)}
+            {text("ntn", <OptionalLabel>NTN / tax number</OptionalLabel>, 80)}
           </div>
-          {text("registrationNumber", optional("Registration number"), 100)}
+          {text("registrationNumber", <OptionalLabel>Registration number</OptionalLabel>, 100)}
         </Group>
         <Group title="Bank">
           <div className={pair}>
-            {text("bankName", optional("Bank name"), 150)}
-            {text("accountTitle", optional("Account title"), 150)}
+            {text("bankName", <OptionalLabel>Bank name</OptionalLabel>, 150)}
+            {text("accountTitle", <OptionalLabel>Account title</OptionalLabel>, 150)}
           </div>
           <div className={pair}>
-            {text("accountNumber", optional("Account number"), 100)}
-            {text("iban", optional("IBAN"), 100)}
+            {text("accountNumber", <OptionalLabel>Account number</OptionalLabel>, 100)}
+            {text("iban", <OptionalLabel>IBAN</OptionalLabel>, 100)}
           </div>
         </Group>
         <Group title="Notes">
-          <TextArea label={optional("Notes")} rows={3} maxLength={2000} disabled={saving} value={fields.notes} onChange={(event) => set({ notes: event.target.value })} />
+          <TextArea label={<OptionalLabel>Notes</OptionalLabel>} rows={3} maxLength={2000} disabled={saving} value={fields.notes} onChange={(event) => set({ notes: event.target.value })} />
         </Group>
       </form>
     </Modal>

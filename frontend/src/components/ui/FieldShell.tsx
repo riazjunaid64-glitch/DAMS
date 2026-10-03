@@ -22,6 +22,11 @@ type FieldShellProps = FieldBaseProps & {
   children: ReactNode;
 };
 
+/** A field label with a grey "(optional)" after it, kept in lower case inside the upper-case label. */
+export function OptionalLabel({ children }: { children: ReactNode }) {
+  return <>{children} <span className="font-normal normal-case tracking-normal text-ink-muted">(optional)</span></>;
+}
+
 /** Label above, control, then helper or error below — the frame every form field shares. */
 export function FieldShell({ label, required, helper, error, htmlFor, messageId, as = "div", className, children }: FieldShellProps) {
   const Root = as;

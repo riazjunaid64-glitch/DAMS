@@ -7,18 +7,35 @@ import { MONTHS, type FinanceSettings } from "./whtTypes.ts";
 
 const MONTH_OPTIONS = MONTHS.map((name, index) => ({ value: String(index + 1), label: name }));
 
-type Props = { settings: FinanceSettings; onSaved: () => Promise<void> };
+type Props = {
+  settings: FinanceSettings;
+  onSaved: () => void;
+  /** The settings are being read again: Save waits for the new version rather than send a stale one. */
+  disabled?: boolean;
+};
 
 /**
  * Finance settings > Financial year: the month the year starts in and the go-live date, the first day
  * DAMS records movements for. Once a date is saved it cannot be emptied, and moving it asks first;
  * the server refuses a later date while anything is recorded before it.
  */
-export function FinancialYearCard({ settings, onSaved }: Props) {
+export function FinancialYearCard({ settings, onSaved, disabled = false }: Props) {
   const toast = useToast();
   const savedGoLive = serverDay(settings.goLiveDate);
-  const [month, setMonth] = useState(String(settings.financialYearStartMonth));
-  const [goLive, setGoLive] = useState(savedGoLive ?? "");
+  const savedMonth = String(settings.financialYearStartMonth);
+  // What the user changed and has not saved; a field with no draft shows the saved value. When a new
+  // version arrives, a draft that now equals the saved value was saved (this card's own Save) and is
+  // dropped; one that still differs survives a save made elsewhere on the same settings (Mark as checked).
+  const [monthDraft, setMonthDraft] = useState<string | null>(null);
+  const [goLiveDraft, setGoLiveDraft] = useState<string | null>(null);
+  const [seenVersion, setSeenVersion] = useState(settings.concurrencyToken);
+  if (seenVersion !== settings.concurrencyToken) {
+    setSeenVersion(settings.concurrencyToken);
+    if (monthDraft === savedMonth) setMonthDraft(null);
+    if (goLiveDraft === (savedGoLive ?? "")) setGoLiveDraft(null);
+  }
+  const month = monthDraft ?? savedMonth;
+  const goLive = goLiveDraft ?? savedGoLive ?? "";
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,23 +56,24 @@ export function FinancialYearCard({ settings, onSaved }: Props) {
         clearRatesConfirmation: false,
         concurrencyToken: settings.concurrencyToken,
       });
-      toast.success("Financial year saved.");
-      await onSaved();
+      toast.success("Finance settings saved.");
+      onSaved();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "The financial year could not be saved.");
+    } finally {
       setConfirming(false);
       setSaving(false);
     }
   };
 
   const submit = () => {
-    if (saving || missing) return;
+    if (saving || missing || disabled) return;
     if (changed && savedGoLive !== null) setConfirming(true);
     else void save();
   };
 
   return (
-    <Card title="Financial year" className="max-w-xl">
+    <Card title="Financial year">
       <form noValidate onSubmit={(event) => { event.preventDefault(); submit(); }} className="flex flex-col gap-4">
         {error && <Notice tone="red" role="alert" title={error} />}
         <Dropdown
@@ -64,7 +82,7 @@ export function FinancialYearCard({ settings, onSaved }: Props) {
           disabled={saving}
           options={MONTH_OPTIONS}
           value={month}
-          onChange={setMonth}
+          onChange={setMonthDraft}
           helper={`Current year: ${settings.currentFinancialYear}`}
         />
         <DatePicker
@@ -73,11 +91,11 @@ export function FinancialYearCard({ settings, onSaved }: Props) {
           disabled={saving}
           max={pakistanToday()}
           value={goLive}
-          onChange={setGoLive}
+          onChange={setGoLiveDraft}
           helper="Opening balances are the position at the start of this day."
         />
         <div>
-          <Button type="submit" loading={saving && !confirming} disabled={saving || missing}>Save</Button>
+          <Button type="submit" loading={saving && !confirming} disabled={saving || missing || disabled}>Save</Button>
         </div>
       </form>
       <ConfirmDialog

@@ -5621,6 +5621,64 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// The vendor list in Finance settings filters by filer status and counts every match beside the
+    /// page, while each row sums this financial year's payments. In memory all of that runs in C#; this
+    /// shows the filter, the count and the page translate together, and that the total counts every
+    /// match, not only the rows on the page.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheVendorList_FiltersCountsAndPages_InSql()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+        var bank = new FinanceAccount
+        {
+            Name = "Vendor List Bank Probe", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Bank, IsActive = true
+        };
+        db.FinanceAccounts.Add(bank);
+        // Vendor 01 to 23: the even ones (eleven) are non-filers, and Vendor 23 is inactive.
+        for (var number = 1; number <= 23; number++)
+        {
+            db.Vendors.Add(new Vendor
+            {
+                Name = $"Vendor {number:00}", IsActive = number != 23,
+                FilerStatus = number % 2 == 0 ? FilerStatus.NonFiler : FilerStatus.Filer
+            });
+        }
+        await db.SaveChangesAsync();
+        var paid = await db.Vendors.SingleAsync(v => v.Name == "Vendor 02");
+        db.Expenses.Add(new Expense
+        {
+            FinanceAccountId = bank.Id, Amount = 100_000m, Category = "Cement", Vendor = paid.Name, VendorId = paid.Id,
+            Date = PakistanTime.Today, WhtApplied = true, WhtAmount = 2_000m, WhtTaxSection = "153(1)(a)",
+            VendorFilerStatusAtEntry = FilerStatus.NonFiler
+        });
+        await db.SaveChangesAsync();
+        var vendors = new VendorService(db);
+
+        var nonFilers = await vendors.GetPageAsync(null, false, 0, 10, FilerStatus.NonFiler);
+        Assert.Equal(11, nonFilers.TotalCount);
+        Assert.Equal(10, nonFilers.Items.Count);
+        Assert.True(nonFilers.HasMore);
+        Assert.All(nonFilers.Items, v => Assert.Equal(FilerStatus.NonFiler, v.FilerStatus));
+        var withPayment = Assert.Single(nonFilers.Items, v => v.Id == paid.Id);
+        Assert.Equal(100_000m, withPayment.YearToDateGross);
+        Assert.Equal(2_000m, withPayment.YearToDateWht);
+        Assert.Equal(1, withPayment.PaymentCount);
+
+        var lastPage = await vendors.GetPageAsync("Vendor", false, 20, 10);
+        Assert.Equal(23, lastPage.TotalCount);
+        Assert.Equal(3, lastPage.Items.Count);
+        Assert.False(lastPage.HasMore);
+        // Active first, so the one inactive vendor is the very last row.
+        Assert.False(lastPage.Items[^1].IsActive);
+    }
+
+    /// <summary>
     /// A new account with an opening balance is an account plus its "Created" history row, written in one
     /// retried transaction. A transient failure after the account insert, before the commit, or after a
     /// commit whose answer is lost must still end with exactly one account and one history row that

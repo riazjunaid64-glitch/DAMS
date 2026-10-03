@@ -23,8 +23,8 @@ export interface SaveRevenueCategory {
   concurrencyToken: string | null;
 }
 
-export const listRevenueCategories = (includeInactive = false) =>
-  apiJson<RevenueCategory[]>(`/api/finance/revenue-categories?includeInactive=${includeInactive}`);
+export const listRevenueCategories = (includeInactive = false, signal?: AbortSignal) =>
+  apiJson<RevenueCategory[]>(`/api/finance/revenue-categories?includeInactive=${includeInactive}`, { signal });
 
 export const saveRevenueCategory = (id: number | null, body: SaveRevenueCategory) =>
   apiJson<RevenueCategory>(

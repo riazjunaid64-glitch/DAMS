@@ -1,7 +1,8 @@
 import { Button, DataTable, EmptyState, IconFile, Notice, StatusBadge, type DataTableColumn } from "../../../components/ui";
+import { CardFigure, ListFooter } from "../ListParts.tsx";
+import { clampPage, pageRows } from "../lists.ts";
 import { formatRs, type WhtVendorLine } from "../whtTypes.ts";
-import { ListFooter } from "./ListFooter.tsx";
-import { clampPage, pageRows, sectionLabel, supplierKey, supplierTaxId } from "./rules.ts";
+import { sectionLabel, supplierKey, supplierTaxId } from "./rules.ts";
 
 type Props = {
   /** The whole s.165 statement; null until it has answered, and again after a failure. */
@@ -44,13 +45,6 @@ export function SuppliersList({ rows, loading, error, ranged, isPhone, page, sho
     { key: "net", header: "Paid to supplier", align: "right", render: (line) => <span className={`${money} text-ink-2`}>{formatRs(line.netPaid)}</span> },
   ];
 
-  const figure = (label: string, value: number, tax = false) => (
-    <div className="min-w-0">
-      <p className="m-0 text-caption font-bold uppercase tracking-[0.4px] text-ink-muted">{label}</p>
-      <p className={`m-0 mt-0.5 font-extrabold ${money} ${tax ? "text-gold-text" : "text-ink"}`} style={{ fontSize: "clamp(11px, 3.6vw, 15px)" }}>{formatRs(value)}</p>
-    </div>
-  );
-
   const phoneCard = (line: Line) => (
     <div className="rounded-card border border-line bg-card p-4 font-ui">
       <div className="flex items-start justify-between gap-3">
@@ -59,9 +53,9 @@ export function SuppliersList({ rows, loading, error, ranged, isPhone, page, sho
       </div>
       <p className="m-0 mt-0.5 text-small text-ink-muted">{supplierTaxId(line)} · {sectionLabel(line.taxSection)}</p>
       <div className="mt-3 grid grid-cols-3 gap-2">
-        {figure("Paid in total", line.grossAmount)}
-        {figure("Tax withheld", line.whtAmount, true)}
-        {figure("To supplier", line.netPaid)}
+        <CardFigure label="Paid in total">{formatRs(line.grossAmount)}</CardFigure>
+        <CardFigure label="Tax withheld" gold>{formatRs(line.whtAmount)}</CardFigure>
+        <CardFigure label="To supplier">{formatRs(line.netPaid)}</CardFigure>
       </div>
     </div>
   );

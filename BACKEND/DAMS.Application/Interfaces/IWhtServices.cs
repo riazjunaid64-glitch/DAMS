@@ -1,5 +1,6 @@
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.WhtDtos;
+using DAMS.Domain.Enums;
 
 namespace DAMS.Application.Interfaces
 {
@@ -18,7 +19,9 @@ namespace DAMS.Application.Interfaces
 
     public interface IVendorService
     {
-        Task<PagedResult<VendorDto>> GetPageAsync(string? search, bool activeOnly, int skip, int take, CancellationToken cancellationToken = default);
+        /// <summary>One page of vendors, active first then by name, with the count of every vendor
+        /// matching the same search and filer status.</summary>
+        Task<PagedResult<VendorDto>> GetPageAsync(string? search, bool activeOnly, int skip, int take, FilerStatus? filerStatus = null, CancellationToken cancellationToken = default);
         Task<List<VendorOptionDto>> GetOptionsAsync(bool includeInactive, CancellationToken cancellationToken = default);
         Task<VendorDto> GetByIdAsync(int id, CancellationToken cancellationToken = default);
         Task<VendorDto> CreateAsync(SaveVendorDto dto, int? adminUserId, CancellationToken cancellationToken = default);

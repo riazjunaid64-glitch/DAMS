@@ -14,8 +14,8 @@ const settings = (over: Partial<FinanceSettings> = {}): FinanceSettings => ({
   currentFinancialYear: "2026-27", concurrencyToken: "tok", ...over,
 });
 
-const show = (value: FinanceSettings, onSaved = vi.fn().mockResolvedValue(undefined)) => {
-  render(<ToastProvider><FinancialYearCard settings={value} onSaved={onSaved} /></ToastProvider>);
+const show = (value: FinanceSettings, onSaved = vi.fn(), disabled = false) => {
+  render(<ToastProvider><FinancialYearCard settings={value} onSaved={onSaved} disabled={disabled} /></ToastProvider>);
   return onSaved;
 };
 
@@ -67,7 +67,7 @@ describe("Financial year card", () => {
     expect(save.mock.calls[0]![0]).toEqual({
       financialYearStartMonth: 1, goLiveDate: null, markRatesConfirmed: false, clearRatesConfirmation: false, concurrencyToken: "tok",
     });
-    expect(await screen.findByText("Financial year saved.")).toBeTruthy();
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Change the go-live date?")).toBeNull();
   });
@@ -118,14 +118,14 @@ describe("Financial year card", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it("sends the new date on Change, then says Financial year saved. and reloads", async () => {
+  it("sends the new date on Change, then says Finance settings saved. and reloads", async () => {
     const onSaved = show(settings());
     pickDay("August 20, 2026");
     fireEvent.click(saveButton());
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Change" }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0]).toMatchObject({ goLiveDate: "2026-08-20" });
-    expect(await screen.findByText("Financial year saved.")).toBeTruthy();
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
     expect(onSaved).toHaveBeenCalledTimes(1);
   });
 
@@ -152,6 +152,55 @@ describe("Financial year card", () => {
     pickDay("October 1, 2026");
     fireEvent.click(saveButton());
     expect(await screen.findByText("Go-live date cannot be in the future.")).toBeTruthy();
+  });
+
+  it("closes the question and frees Save once saved, as the card stays on screen while the page reloads", async () => {
+    show(settings());
+    pickDay("August 20, 2026");
+    fireEvent.click(saveButton());
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Change" }));
+    expect(await screen.findByText("Finance settings saved.")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("keeps Save off while the page reads the settings again, so a stale version is never sent", () => {
+    show(settings(), vi.fn(), true);
+    expect(saveButton().disabled).toBe(true);
+    fireEvent.click(saveButton());
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  describe("when a new version of the settings arrives", () => {
+    const mount = (value: FinanceSettings) => {
+      const view = render(<ToastProvider><FinancialYearCard settings={value} onSaved={vi.fn()} /></ToastProvider>);
+      return (next: FinanceSettings) => view.rerender(<ToastProvider><FinancialYearCard settings={next} onSaved={vi.fn()} /></ToastProvider>);
+    };
+    const monthShown = () => screen.getByRole("combobox", { name: /Year starts in/ }).textContent;
+
+    it("shows the new saved values in fields nobody changed", () => {
+      const update = mount(settings());
+      update(settings({ financialYearStartMonth: 4, goLiveDate: "2026-08-20T00:00:00", concurrencyToken: "tok-2" }));
+      expect(monthShown()).toContain("April");
+      expect(goLiveField().textContent).toContain("Aug 20, 2026");
+    });
+
+    it("keeps a month changed but not saved, when the version changed for another reason", () => {
+      const update = mount(settings());
+      fireEvent.click(screen.getByRole("combobox", { name: /Year starts in/ }));
+      fireEvent.click(screen.getByRole("option", { name: "January" }));
+      update(settings({ whtRatesConfirmedAt: "2026-10-01T06:00:00", concurrencyToken: "tok-2" }));
+      expect(monthShown()).toContain("January");
+    });
+
+    it("lets go of a draft once it is the saved value, so a later change made elsewhere shows", () => {
+      const update = mount(settings());
+      fireEvent.click(screen.getByRole("combobox", { name: /Year starts in/ }));
+      fireEvent.click(screen.getByRole("option", { name: "January" }));
+      update(settings({ financialYearStartMonth: 1, concurrencyToken: "tok-2" }));
+      update(settings({ financialYearStartMonth: 4, concurrencyToken: "tok-3" }));
+      expect(monthShown()).toContain("April");
+    });
   });
 
   it("blocks a second click while saving", async () => {

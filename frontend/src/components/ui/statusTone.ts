@@ -52,6 +52,10 @@ const TONES: Record<string, StatusTone> = {
   filer: "green",
   nonfiler: "red",
   unknown: "orange",
+  // Finance settings (KAN-96): a category taken off new entries, and the tax-rates check.
+  retired: "grey",
+  checkedbyaccountant: "green",
+  notcheckedyet: "orange",
 };
 
 /** Words that differ from the plain sentence-case of the status. */

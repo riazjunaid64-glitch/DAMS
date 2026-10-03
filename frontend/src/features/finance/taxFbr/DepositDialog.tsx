@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type FormEvent } from "react";
-import { DatePicker, DialogTitle, Dropdown, Modal, Notice, NumberField, TextField, useToast } from "../../../components/ui";
+import { DatePicker, DialogTitle, Dropdown, Modal, Notice, NumberField, OptionalLabel, TextField, useToast } from "../../../components/ui";
 import { pakistanToday } from "../../../lib/financePeriods.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 import { cashAccountChoices } from "../loans/rules.ts";
@@ -8,7 +8,6 @@ import { saveDeposit } from "../whtApi.ts";
 import { formatRs, type WhtDeposit } from "../whtTypes.ts";
 import { depositBody, depositErrors, depositFields, depositReady } from "./rules.ts";
 
-const optional = (label: string) => <>{label} <span className="font-normal normal-case tracking-normal text-ink-muted">(optional)</span></>;
 
 type Props = {
   /** The deposit being edited; null records a new one. */
@@ -91,11 +90,11 @@ export function DepositDialog({ deposit, owed, accounts, accountsError, onClose,
         />
         <div className="grid gap-4 md:grid-cols-2">
           <DatePicker label="Deposit date" required disabled={saving} max={today} error={errors.date} value={fields.date} onChange={(date) => set({ date })} />
-          <TextField label={optional("Challan / CPR number")} maxLength={100} disabled={saving} value={fields.challan} onChange={(event) => set({ challan: event.target.value })} />
-          <DatePicker label={optional("Period covered from")} disabled={saving} value={fields.periodFrom} onChange={(periodFrom) => set({ periodFrom })} />
-          <DatePicker label={optional("Period covered to")} disabled={saving} min={fields.periodFrom || undefined} error={errors.periodTo} value={fields.periodTo} onChange={(periodTo) => set({ periodTo })} />
+          <TextField label={<OptionalLabel>Challan / CPR number</OptionalLabel>} maxLength={100} disabled={saving} value={fields.challan} onChange={(event) => set({ challan: event.target.value })} />
+          <DatePicker label={<OptionalLabel>Period covered from</OptionalLabel>} disabled={saving} value={fields.periodFrom} onChange={(periodFrom) => set({ periodFrom })} />
+          <DatePicker label={<OptionalLabel>Period covered to</OptionalLabel>} disabled={saving} min={fields.periodFrom || undefined} error={errors.periodTo} value={fields.periodTo} onChange={(periodTo) => set({ periodTo })} />
         </div>
-        <TextField label={optional("Notes")} maxLength={1000} disabled={saving} value={fields.notes} onChange={(event) => set({ notes: event.target.value })} />
+        <TextField label={<OptionalLabel>Notes</OptionalLabel>} maxLength={1000} disabled={saving} value={fields.notes} onChange={(event) => set({ notes: event.target.value })} />
       </form>
     </Modal>
   );

@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type FormEvent } from "react";
-import { DialogTitle, Dropdown, Modal, Notice, TextField, Toggle, useToast } from "../../../components/ui";
+import { DialogTitle, Dropdown, Modal, Notice, OptionalLabel, TextField, Toggle, useToast } from "../../../components/ui";
 import { loansApi } from "./api.ts";
 import { loanAccountChoices } from "./rules.ts";
 import type { Loan, LoanAccount } from "./types.ts";
@@ -71,7 +71,7 @@ export function LoanFormDialog({ loan, accounts, accountsError, onClose, onSaved
         {accountsError && <Notice tone="orange" role="alert" title={accountsError} />}
         <TextField label="Loan name" required maxLength={200} disabled={saving} value={fields.name} onChange={(event) => set({ name: event.target.value })} />
         <TextField
-          label={<>Lender name <span className="font-normal normal-case tracking-normal text-ink-muted">(optional)</span></>}
+          label={<OptionalLabel>Lender name</OptionalLabel>}
           maxLength={200}
           disabled={saving}
           value={fields.lenderName}

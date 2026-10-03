@@ -25,10 +25,12 @@ namespace DAMS.Application.Services
         public async Task<ExpenseCategoryDto> CreateAsync(SaveExpenseCategoryDto dto, int? adminUserId, CancellationToken cancellationToken = default)
         {
             Validate(dto);
+            // The name first: the code is made from it, so an exact repeat would otherwise always be
+            // reported as a code clash, a message about a field the screen does not show.
+            await EnsureUniqueNameAsync(dto.Name, null, cancellationToken);
             var code = NormaliseCode(dto.Code, dto.Name);
             if (await _context.ExpenseCategories.AnyAsync(c => c.Code == code, cancellationToken))
-                throw new InvalidOperationException("An expense category with this code already exists.");
-            await EnsureUniqueNameAsync(dto.Name, null, cancellationToken);
+                throw new InvalidOperationException("Another expense category already has a name that looks the same. Change the name.");
 
             var category = new ExpenseCategory
             {

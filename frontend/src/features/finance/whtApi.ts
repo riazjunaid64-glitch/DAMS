@@ -3,7 +3,10 @@ import { apiJson, jsonRequest } from "../leads/leadApi.ts";
 import { moneyRequest } from "../../lib/idempotency.ts";
 import type {
   ExpenseCategory,
+  FilerStatus,
   FinanceSettings,
+  SaveExpenseCategory,
+  SaveVendor,
   Vendor,
   VendorOption,
   WhtCalculation,
@@ -12,31 +15,37 @@ import type {
   WhtVendorLine,
 } from "./whtTypes.ts";
 
-export const listCategories = (includeInactive = false) =>
-  apiJson<ExpenseCategory[]>(`/api/finance/expense-categories?includeInactive=${includeInactive}`);
+export const listCategories = (includeInactive = false, signal?: AbortSignal) =>
+  apiJson<ExpenseCategory[]>(`/api/finance/expense-categories?includeInactive=${includeInactive}`, { signal });
 
-export const saveCategory = (id: number | null, body: unknown) =>
+export const saveCategory = (id: number | null, body: SaveExpenseCategory) =>
   apiJson<ExpenseCategory>(
     id ? `/api/finance/expense-categories/${id}` : "/api/finance/expense-categories",
     jsonRequest(id ? "PUT" : "POST", body));
 
+/** Retires the category when anything is filed under it and deletes it when nothing is — the server
+ *  decides which; `category` is null when the row was removed. */
 export const deleteCategory = (id: number) =>
   apiJson<{ message: string; category: ExpenseCategory | null }>(
     `/api/finance/expense-categories/${id}`, { method: "DELETE" });
 
-export const listVendors = (search: string, activeOnly = false) => {
-  const params = new URLSearchParams({ take: "200", activeOnly: String(activeOnly) });
+export type VendorQuery = { search: string; filerStatus: FilerStatus | ""; skip: number; take: number };
+
+/** One page of vendors (active first, then by name) and how many match the search and filer status. */
+export const listVendors = ({ search, filerStatus, skip, take }: VendorQuery, signal?: AbortSignal) => {
+  const params = new URLSearchParams({ skip: String(skip), take: String(take) });
   if (search) params.set("search", search);
-  return apiJson<{ items: Vendor[]; hasMore: boolean }>(`/api/finance/vendors?${params}`);
+  if (filerStatus) params.set("filerStatus", filerStatus);
+  return apiJson<{ items: Vendor[]; hasMore: boolean; totalCount: number }>(`/api/finance/vendors?${params}`, { signal });
 };
 
 export const vendorOptions = (includeInactive = false) =>
   apiJson<VendorOption[]>(`/api/finance/vendors/options?includeInactive=${includeInactive}`);
 
-export const saveVendor = (id: number | null, body: unknown) =>
+export const saveVendor = (id: number | null, body: SaveVendor) =>
   apiJson<Vendor>(id ? `/api/finance/vendors/${id}` : "/api/finance/vendors", jsonRequest(id ? "PUT" : "POST", body));
 
-export const getSettings = () => apiJson<FinanceSettings>("/api/finance/wht/settings");
+export const getSettings = (signal?: AbortSignal) => apiJson<FinanceSettings>("/api/finance/wht/settings", { signal });
 
 export const saveSettings = (body: unknown) =>
   apiJson<FinanceSettings>("/api/finance/wht/settings", jsonRequest("PUT", body));

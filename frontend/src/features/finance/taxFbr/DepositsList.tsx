@@ -1,7 +1,8 @@
 import { ActionsMenu, Button, DataTable, EmptyState, IconPencil, IconWallet, Notice, type DataTableColumn } from "../../../components/ui";
+import { ListFooter } from "../ListParts.tsx";
+import { clampPage, pageRows } from "../lists.ts";
 import { formatRs, type WhtDeposit } from "../whtTypes.ts";
-import { ListFooter } from "./ListFooter.tsx";
-import { clampPage, depositDate, pageRows, periodCovered } from "./rules.ts";
+import { depositDate, periodCovered } from "./rules.ts";
 
 type Props = {
   /** The whole list; null until it has answered, and again after a failure. */

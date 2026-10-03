@@ -92,7 +92,7 @@ namespace DAMS.Application.Services
         {
             var cleanName = name.Trim();
             if (await _context.RevenueCategories.AnyAsync(c => (!except.HasValue || c.Id != except) && (c.Name == cleanName || c.Code == code), cancellationToken))
-                throw new InvalidOperationException("A revenue category with this name or code already exists.");
+                throw new InvalidOperationException("A revenue category with this name, or one that looks the same, already exists.");
         }
 
         private void ApplyToken(RevenueCategory category, string? token)

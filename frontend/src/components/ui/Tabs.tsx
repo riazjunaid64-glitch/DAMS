@@ -17,16 +17,18 @@ export type TabsProps = {
   value: string;
   onChange: (id: string) => void;
   "aria-label"?: string;
-  /** On phone, this many tabs or more become a "Show" dropdown. */
+  /** On phone, this many tabs or more become a dropdown. */
   phoneDropdownFrom?: number;
+  /** The grey word inside that phone dropdown ("Show", or "Section" on Finance settings). */
+  phoneDropdownLabel?: string;
   className?: string;
 };
 
 /**
  * Segmented tabs: grey track, white active pill. On phone they stretch full width, and with four
- * or more tabs they turn into a "Show" dropdown so nothing scrolls sideways.
+ * or more tabs they turn into a dropdown ("Show" by default) so nothing scrolls sideways.
  */
-export function Tabs({ items, value, onChange, "aria-label": ariaLabel = "Sections", phoneDropdownFrom = 4, className }: TabsProps) {
+export function Tabs({ items, value, onChange, "aria-label": ariaLabel = "Sections", phoneDropdownFrom = 4, phoneDropdownLabel = "Show", className }: TabsProps) {
   const isPhone = useIsPhone();
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -34,7 +36,7 @@ export function Tabs({ items, value, onChange, "aria-label": ariaLabel = "Sectio
     return (
       <Dropdown
         size="filter"
-        label="Show"
+        label={phoneDropdownLabel}
         aria-label={ariaLabel}
         value={value}
         onChange={onChange}
