@@ -4,6 +4,7 @@ import { Button, DataTable, EmptyState, IconPencil, Modal, Notice, useIsPhone, t
 import { cx } from "../../../components/ui/cx.ts";
 import { DialogTitle } from "../../../components/ui/DialogTitle.tsx";
 import { showDay } from "../capitalPartners/rules.ts";
+import { TAX_TO_FBR_PATH } from "../home/paths.ts";
 import { formatRs } from "../whtTypes.ts";
 import { accountsApi } from "./api.ts";
 import { accountSubtitle, isCashLike, oldestFirst, withRunningBalances, type Account, type Transaction } from "./accountGroups.ts";
@@ -128,7 +129,7 @@ export function AccountDetailsDialog({ account: listed, onClose, onEdit, onToggl
           <Notice
             tone="gold"
             title={`Includes ${formatRs(held)} tax held for FBR`}
-            action={<Button variant="outline" onClick={() => navigate("/finance/settings")}>Record deposit</Button>}
+            action={<Button variant="outline" onClick={() => navigate(TAX_TO_FBR_PATH)}>Record deposit</Button>}
           />
         )}
 

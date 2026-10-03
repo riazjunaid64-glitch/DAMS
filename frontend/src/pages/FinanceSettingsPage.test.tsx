@@ -33,12 +33,13 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Finance settings", () => {
-  it("has no Opening balances tab any more", async () => {
+  it("has no Opening balances or WHT payable tab any more", async () => {
     show();
     await screen.findAllByRole("tab");
     expect(screen.queryByRole("tab", { name: /Opening balances/ })).toBeNull();
+    expect(screen.queryByRole("tab", { name: /WHT payable/ })).toBeNull();
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Expense categories & WHT rates0", "Revenue categories0", "Vendors", "WHT payable", "Financial year",
+      "Expense categories & WHT rates0", "Revenue categories0", "Vendors", "Financial year",
     ]);
   });
 

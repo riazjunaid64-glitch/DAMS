@@ -756,6 +756,38 @@ public sealed class WithholdingTaxTests
     }
 
     [Fact]
+    public async Task VendorStatement_KeepsDifferentTypedPayeesApart_AndTheSamePayeeTypedTwiceTogether()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = "ABC Traders", Amount = 40_000m }, 1);
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = " abc traders", Amount = 10_000m }, 1);
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = "XYZ Steel", Amount = 60_000m }, 1);
+
+        var lines = await Wht(context).GetByVendorAsync(null, null);
+
+        // Two payees, not one line named after whichever sorts first.
+        Assert.Equal(2, lines.Count);
+        Assert.All(lines, l => Assert.Null(l.VendorId));
+        var abc = Assert.Single(lines, l => string.Equals(l.VendorName.Trim(), "ABC Traders", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(50_000m, abc.GrossAmount);
+        Assert.Equal(2, abc.PaymentCount);
+        var xyz = Assert.Single(lines, l => l.VendorName == "XYZ Steel");
+        Assert.Equal(60_000m, xyz.GrossAmount);
+        // Splitting the payees changes nothing about the totals: the statement still ties to the payable.
+        Assert.Equal(110_000m, lines.Sum(l => l.GrossAmount));
+        Assert.Equal((await Wht(context).GetPayableSummaryAsync(null, null)).TotalWithheldAllTime, lines.Sum(l => l.WhtAmount));
+
+        var (_, content) = await Wht(context).ExportAsync(null, null);
+        var csv = System.Text.Encoding.UTF8.GetString(content);
+        Assert.Contains("XYZ Steel", csv);
+        Assert.Contains("110000.00", csv);   // totals line
+    }
+
+    [Fact]
     public async Task ExportEscapesFormulaCharacters_SoAVendorNameCannotBecomeASpreadsheetCommand()
     {
         await using var context = Seeded();

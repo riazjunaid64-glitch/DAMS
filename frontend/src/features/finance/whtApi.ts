@@ -41,14 +41,14 @@ export const getSettings = () => apiJson<FinanceSettings>("/api/finance/wht/sett
 export const saveSettings = (body: unknown) =>
   apiJson<FinanceSettings>("/api/finance/wht/settings", jsonRequest("PUT", body));
 
-export const payableSummary = (from?: string, to?: string) =>
-  apiJson<WhtPayableSummary>(`/api/finance/wht/payable-summary${range(from, to)}`);
+export const payableSummary = (from?: string, to?: string, signal?: AbortSignal) =>
+  apiJson<WhtPayableSummary>(`/api/finance/wht/payable-summary${range(from, to)}`, { signal });
 
-export const byVendor = (from?: string, to?: string) =>
-  apiJson<WhtVendorLine[]>(`/api/finance/wht/by-vendor${range(from, to)}`);
+export const byVendor = (from?: string, to?: string, signal?: AbortSignal) =>
+  apiJson<WhtVendorLine[]>(`/api/finance/wht/by-vendor${range(from, to)}`, { signal });
 
-export const listDeposits = (from?: string, to?: string) =>
-  apiJson<WhtDeposit[]>(`/api/finance/wht/deposits${range(from, to)}`);
+export const listDeposits = (from?: string, to?: string, signal?: AbortSignal) =>
+  apiJson<WhtDeposit[]>(`/api/finance/wht/deposits${range(from, to)}`, { signal });
 
 /**
  * Recording a deposit is a money movement, so a create carries an idempotency key: a retry after a

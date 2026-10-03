@@ -3,33 +3,25 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App.tsx";
 import { can } from "../features/access/permissions.ts";
-import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
-import { DatePicker } from "../components/ui";
+import { StatusBadge } from "../components/ui";
 import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from "../features/leads/CrmUi.tsx";
 import * as whtApi from "../features/finance/whtApi.ts";
-import { pakistanToday } from "../lib/financePeriods.ts";
-import { newIdempotencyKey } from "../lib/idempotency.ts";
 import { FinancialYearCard } from "../features/finance/FinancialYearCard.tsx";
 import RevenueCategoriesPanel from "../features/finance/RevenueCategoriesPanel.tsx";
 import { listRevenueCategories, type RevenueCategory } from "../features/finance/revenueCategoryApi.ts";
 import {
   FILER_STATUSES,
-  filerLabel,
   formatRate,
   formatRs,
   type ExpenseCategory,
   type FilerStatus,
   type FinanceSettings,
   type Vendor,
-  type WhtDeposit,
-  type WhtPayableSummary,
-  type WhtVendorLine,
 } from "../features/finance/whtTypes.ts";
 
 type Props = { user: User | null };
-type FinanceAccountOption = { id: number; name: string; accountHolderName: string; isActive: boolean };
-type Tab = "rates" | "revenue" | "vendors" | "payable" | "year";
+type Tab = "rates" | "revenue" | "vendors" | "year";
 
 export default function FinanceSettingsPage({ user }: Props) {
   const navigate = useNavigate();
@@ -82,7 +74,7 @@ function SettingsWorkspace() {
             <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">Finance settings</h1>
             <p className="mt-1 max-w-3xl text-sm text-[var(--text-muted)]">
               The heads income and spending are recorded under, the withholding tax deducted from
-              supplier payments, the vendors those rates depend on, and what is owed to FBR.
+              supplier payments, and the vendors those rates depend on.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -114,7 +106,6 @@ function SettingsWorkspace() {
             { id: "rates", label: "Expense categories & WHT rates", count: categories.length },
             { id: "revenue", label: "Revenue categories", count: revenueCategories.length },
             { id: "vendors", label: "Vendors" },
-            { id: "payable", label: "WHT payable" },
             { id: "year", label: "Financial year" },
           ]}
         />
@@ -127,7 +118,6 @@ function SettingsWorkspace() {
               {tab === "rates" && <RatesTab categories={categories} onChanged={loadShared} />}
               {tab === "revenue" && <RevenueCategoriesPanel categories={revenueCategories} onChanged={loadShared} />}
               {tab === "vendors" && <VendorsTab />}
-              {tab === "payable" && <PayableTab />}
               {tab === "year" && settings && <YearTab settings={settings} onSaved={loadShared} />}
             </>
           )}
@@ -476,7 +466,7 @@ function VendorsTab() {
                   {!vendor.isActive && <p className="text-xs text-amber-400">Inactive</p>}
                   {vendor.phone && <p className="text-xs text-[var(--text-muted)]">{vendor.phone}</p>}
                 </td>
-                <td className="px-3 py-3"><FilerBadge status={vendor.filerStatus} /></td>
+                <td className="px-3 py-3"><StatusBadge status={vendor.filerStatus} /></td>
                 <td className="px-3 py-3 text-[var(--text-secondary)]">
                   {vendor.ntn ?? vendor.cnic ?? <span className="text-[var(--text-muted)]">Not recorded</span>}
                 </td>
@@ -621,316 +611,6 @@ function VendorModal({ item, onClose, onSaved }: {
   );
 }
 
-function FilerBadge({ status }: { status: FilerStatus }) {
-  const tone = status === "Filer" ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-400"
-    : status === "NonFiler" ? "border-rose-500/25 bg-rose-500/10 text-rose-400"
-    : "border-amber-500/25 bg-amber-500/10 text-amber-400";
-  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${tone}`}>{filerLabel(status)}</span>;
-}
-
-// ── WHT payable & FBR deposits ────────────────────────────────────────────────
-
-function PayableTab() {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [summary, setSummary] = useState<WhtPayableSummary | null>(null);
-  const [lines, setLines] = useState<WhtVendorLine[]>([]);
-  const [deposits, setDeposits] = useState<WhtDeposit[]>([]);
-  const [accounts, setAccounts] = useState<FinanceAccountOption[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState<WhtDeposit | null | "new">(null);
-
-  const load = useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
-      const [summaryRow, vendorLines, depositRows] = await Promise.all([
-        whtApi.payableSummary(from, to),
-        whtApi.byVendor(from, to),
-        whtApi.listDeposits(from, to),
-      ]);
-      setSummary(summaryRow); setLines(vendorLines); setDeposits(depositRows);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The withholding position could not be loaded.");
-    } finally { setLoading(false); }
-  }, [from, to]);
-  useEffect(() => { void load(); }, [load]);
-
-  useEffect(() => {
-    void api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true")
-      .then(async (res) => { if (res.ok) setAccounts(await res.json()); })
-      .catch(() => { /* the deposit form shows its own validation if accounts are unavailable */ });
-  }, []);
-
-  const removeDeposit = async (deposit: WhtDeposit) => {
-    if (!window.confirm(`Delete the ${formatRs(deposit.amount)} deposit${deposit.challanNumber ? ` (${deposit.challanNumber})` : ""}? The amount goes back to being owed to FBR.`)) return;
-    try { await whtApi.deleteDeposit(deposit.id, deposit.concurrencyToken); await load(); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "The deposit could not be deleted."); }
-  };
-
-  return (
-    <div>
-      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-[var(--text-heading)]">Withholding tax payable</h2>
-          <p className="mt-1 max-w-3xl text-sm text-[var(--text-muted)]">
-            Tax deducted from suppliers is money held on FBR's behalf. It stays in the account
-            balance until it is deposited, so it is not available to spend.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <div>
-            <Label>From</Label>
-            <DatePicker aria-label="From" value={from} onChange={setFrom} />
-          </div>
-          <div>
-            <Label>To</Label>
-            <DatePicker aria-label="To" value={to} onChange={setTo} />
-          </div>
-          <Button size="sm" variant="outline"
-            onClick={() => void whtApi.downloadWhtStatement(from, to).catch((e: unknown) =>
-              setError(e instanceof Error ? e.message : "The export failed."))}>
-            Export CSV
-          </Button>
-          <Button size="sm" onClick={() => setEditing("new")}>+ Record deposit</Button>
-        </div>
-      </div>
-
-      {error && <div className="mb-4"><ErrorBanner message={error} onRetry={() => void load()} /></div>}
-      {loading && <p className="py-10 text-center text-sm text-[var(--text-muted)]">Loading…</p>}
-
-      {summary && !loading && (
-        <>
-          <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Stat label="Still owed to FBR" value={formatRs(summary.outstandingPayable)} accent
-              hint={summary.openingPayable !== 0
-                ? `All time: ${formatRs(summary.openingPayable)} brought forward at go-live, plus withheld, less deposited`
-                : "All time, withheld less deposited"} />
-            <Stat label="Withheld in period" value={formatRs(summary.withheldInPeriod)}
-              hint={`${summary.paymentCount} payment(s), ${summary.vendorCount} vendor(s)`} />
-            <Stat label="Deposited in period" value={formatRs(summary.depositedInPeriod)} />
-            <Stat label="Withheld all time" value={formatRs(summary.totalWithheldAllTime)}
-              hint={`${formatRs(summary.totalDepositedAllTime)} deposited`} />
-          </div>
-
-          {summary.bySection.length > 0 && (
-            <div className="mb-6 flex flex-wrap gap-2">
-              {summary.bySection.map((section) => (
-                <span key={section.taxSection}
-                  className="rounded-full border border-[var(--border)] bg-[var(--surface-glass)] px-3 py-1.5 text-xs text-[var(--text-secondary)]">
-                  <strong className="text-[var(--text-heading)]">{section.taxSection}</strong>
-                  {" · "}{formatRs(section.whtAmount)} on {formatRs(section.grossAmount)}
-                </span>
-              ))}
-            </div>
-          )}
-
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            By vendor and section (s.165 statement)
-          </h3>
-          <div className="mb-8 overflow-x-auto">
-            <table className="w-full min-w-[820px] text-left text-sm">
-              <thead>
-                <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wider text-[var(--text-muted)]">
-                  <th className="px-3 py-3">Vendor</th>
-                  <th className="px-3 py-3">NTN / CNIC</th>
-                  <th className="px-3 py-3">Status</th>
-                  <th className="px-3 py-3">Section</th>
-                  <th className="px-3 py-3 text-right">Gross</th>
-                  <th className="px-3 py-3 text-right">Withheld</th>
-                  <th className="px-3 py-3 text-right">Net paid</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((line, index) => (
-                  <tr key={`${line.vendorId ?? "free"}-${line.taxSection ?? "none"}-${index}`}
-                    className="border-b border-[var(--border)] last:border-0">
-                    <td className="px-3 py-3 font-medium text-[var(--text-heading)]">{line.vendorName}</td>
-                    <td className="px-3 py-3 text-[var(--text-secondary)]">{line.ntn ?? line.cnic ?? "—"}</td>
-                    <td className="px-3 py-3"><FilerBadge status={line.filerStatus} /></td>
-                    <td className="px-3 py-3 text-[var(--text-secondary)]">{line.taxSection ?? "—"}</td>
-                    <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(line.grossAmount)}</td>
-                    <td className="px-3 py-3 text-right font-semibold text-[var(--text-heading)]">{formatRs(line.whtAmount)}</td>
-                    <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(line.netPaid)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {lines.length === 0 && (
-              <p className="rounded-xl border border-dashed border-[var(--border)] py-12 text-center text-sm text-[var(--text-muted)]">
-                No tax was withheld in this period.
-              </p>
-            )}
-          </div>
-
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            Deposits to FBR
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-sm">
-              <thead>
-                <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wider text-[var(--text-muted)]">
-                  <th className="px-3 py-3">Date</th>
-                  <th className="px-3 py-3">Challan / CPR</th>
-                  <th className="px-3 py-3">Paid from</th>
-                  <th className="px-3 py-3">Covers</th>
-                  <th className="px-3 py-3 text-right">Amount</th>
-                  <th className="px-3 py-3" />
-                </tr>
-              </thead>
-              <tbody>
-                {deposits.map((deposit) => (
-                  <tr key={deposit.id} className="border-b border-[var(--border)] last:border-0">
-                    <td className="px-3 py-3 text-[var(--text-secondary)]">
-                      {new Date(deposit.depositDate).toLocaleDateString("en-GB")}
-                    </td>
-                    <td className="px-3 py-3 text-[var(--text-heading)]">{deposit.challanNumber ?? "—"}</td>
-                    <td className="px-3 py-3 text-[var(--text-secondary)]">{deposit.financeAccountName ?? "—"}</td>
-                    <td className="px-3 py-3 text-[var(--text-muted)]">
-                      {deposit.periodFrom && deposit.periodTo
-                        ? `${new Date(deposit.periodFrom).toLocaleDateString("en-GB")} – ${new Date(deposit.periodTo).toLocaleDateString("en-GB")}`
-                        : "—"}
-                    </td>
-                    <td className="px-3 py-3 text-right font-semibold text-[var(--text-heading)]">{formatRs(deposit.amount)}</td>
-                    <td className="px-3 py-3">
-                      <div className="flex justify-end gap-2">
-                        <Button size="sm" variant="outline" onClick={() => setEditing(deposit)}>Edit</Button>
-                        <button type="button" onClick={() => void removeDeposit(deposit)}
-                          className="text-xs font-semibold text-[var(--text-muted)] hover:text-rose-400">Delete</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {deposits.length === 0 && (
-              <p className="rounded-xl border border-dashed border-[var(--border)] py-12 text-center text-sm text-[var(--text-muted)]">
-                Nothing deposited in this period. Record a challan once the withheld tax has been paid
-                to FBR — that is what takes it out of the account balance.
-              </p>
-            )}
-          </div>
-        </>
-      )}
-
-      {editing && (
-        <DepositModal
-          item={editing === "new" ? null : editing}
-          accounts={accounts}
-          suggested={summary?.outstandingPayable ?? 0}
-          onClose={() => setEditing(null)}
-          onSaved={async () => { setEditing(null); await load(); }}
-        />
-      )}
-    </div>
-  );
-}
-
-function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
-  item: WhtDeposit | null;
-  accounts: FinanceAccountOption[];
-  suggested: number;
-  onClose: () => void;
-  onSaved: () => Promise<void>;
-}) {
-  const [form, setForm] = useState({
-    financeAccountId: item ? String(item.financeAccountId) : "",
-    amount: item ? String(item.amount) : suggested > 0 ? String(suggested) : "",
-    depositDate: item?.depositDate?.slice(0, 10) ?? pakistanToday(),
-    challanNumber: item?.challanNumber ?? "",
-    periodFrom: item?.periodFrom?.slice(0, 10) ?? "",
-    periodTo: item?.periodTo?.slice(0, 10) ?? "",
-    notes: item?.notes ?? "",
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // One key per open dialog: retrying the same deposit reuses it, so a save that committed before
-  // the connection dropped is recognised instead of paying the same challan twice.
-  const [requestKey] = useState(() => newIdempotencyKey("wht-deposit"));
-  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
-    setForm((f) => ({ ...f, [key]: value }));
-
-  const save = async () => {
-    if (!form.financeAccountId) { setError("Select the account this was paid from."); return; }
-    setSaving(true); setError(null);
-    try {
-      await whtApi.saveDeposit(item?.id ?? null, {
-        financeAccountId: Number(form.financeAccountId),
-        amount: Number(form.amount) || 0,
-        depositDate: form.depositDate || null,
-        challanNumber: form.challanNumber || null,
-        periodFrom: form.periodFrom || null,
-        periodTo: form.periodTo || null,
-        notes: form.notes || null,
-        concurrencyToken: item?.concurrencyToken ?? null,
-      }, requestKey);
-      await onSaved();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The deposit could not be saved.");
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <CrmModal
-      open
-      title={item ? "Edit WHT deposit" : "Record WHT deposit"}
-      subtitle="This reduces the account balance without being a business expense — the cost was already booked when the supplier was paid."
-      onClose={onClose}
-      footer={
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</Button>
-        </div>
-      }
-    >
-      <div className="space-y-4">
-        {error && <ErrorBanner message={error} />}
-        <div>
-          <Label required>Paid from account</Label>
-          <AppSelect className={inputClass} value={form.financeAccountId}
-            onChange={(e) => set("financeAccountId", e.target.value)}>
-            <option value="">Select account</option>
-            {accounts.filter((a) => a.isActive || String(a.id) === form.financeAccountId).map((a) => (
-              <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>
-            ))}
-          </AppSelect>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <Label required>Amount (Rs)</Label>
-            <input className={inputClass} type="number" step="0.01" min="0"
-              value={form.amount} onChange={(e) => set("amount", e.target.value)} />
-            {!item && suggested > 0 && (
-              <p className="mt-1 text-xs text-[var(--text-muted)]">Currently owed: {formatRs(suggested)}</p>
-            )}
-          </div>
-          <div>
-            <Label required>Deposit date</Label>
-            <DatePicker aria-label="Deposit date" required max={pakistanToday()} value={form.depositDate} onChange={(value) => set("depositDate", value)} />
-          </div>
-          <div>
-            <Label>Challan / CPR number</Label>
-            <input className={inputClass} value={form.challanNumber}
-              onChange={(e) => set("challanNumber", e.target.value)} />
-          </div>
-          <div>
-            <Label>Notes</Label>
-            <input className={inputClass} value={form.notes} onChange={(e) => set("notes", e.target.value)} />
-          </div>
-          <div>
-            <Label>Period covered from</Label>
-            <DatePicker aria-label="Period covered from" value={form.periodFrom} onChange={(value) => set("periodFrom", value)} />
-          </div>
-          <div>
-            <Label>Period covered to</Label>
-            <DatePicker aria-label="Period covered to" min={form.periodFrom || undefined} value={form.periodTo} onChange={(value) => set("periodTo", value)} />
-          </div>
-        </div>
-      </div>
-    </CrmModal>
-  );
-}
-
 // ── Financial year ────────────────────────────────────────────────────────────
 
 function YearTab({ settings, onSaved }: { settings: FinanceSettings; onSaved: () => Promise<void> }) {
@@ -990,16 +670,6 @@ function YearTab({ settings, onSaved }: { settings: FinanceSettings; onSaved: ()
           </Button>
         )}
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, hint, accent }: { label: string; value: string; hint?: string; accent?: boolean }) {
-  return (
-    <div className={`rounded-xl border p-4 ${accent ? "border-amber-500/30 bg-amber-500/[0.07]" : "border-[var(--border)] bg-[var(--surface-glass)]"}`}>
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{label}</p>
-      <p className={`mt-1.5 text-xl font-bold ${accent ? "text-amber-300" : "text-[var(--text-heading)]"}`}>{value}</p>
-      {hint && <p className="mt-1 text-xs text-[var(--text-muted)]">{hint}</p>}
     </div>
   );
 }

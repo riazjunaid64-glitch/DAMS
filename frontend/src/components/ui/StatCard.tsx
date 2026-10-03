@@ -20,7 +20,7 @@ export type StatCardProps = {
   tone?: StatusTone;
   /** Used as a filter and currently applied: navy border, pressed state. */
   selected?: boolean;
-  /** Soft gold tint for a card that needs attention. Uses the same tokens as a gold Notice. */
+  /** Soft gold tint, and a gold number, for a card that needs attention. Uses the same tokens as a gold Notice. */
   highlight?: boolean;
   /** Small grey line under the number, e.g. "As of today". */
   note?: ReactNode;
@@ -40,7 +40,7 @@ const VALUE_SIZE = 26;
  * The full amount on one line. When it is wider than the card (a long figure on a phone), the
  * type shrinks until it fits. It is never wrapped or clipped.
  */
-function FittedValue({ children }: { children: ReactNode }) {
+function FittedValue({ children, gold = false }: { children: ReactNode; gold?: boolean }) {
   const outerRef = useRef<HTMLSpanElement>(null);
   const innerRef = useRef<HTMLSpanElement>(null);
   const [size, setSize] = useState<number | null>(null);
@@ -72,7 +72,7 @@ function FittedValue({ children }: { children: ReactNode }) {
     <span ref={outerRef} className="mt-0.5 block w-full min-w-0">
       <span
         ref={innerRef}
-        className="block whitespace-nowrap font-extrabold leading-tight tabular-nums text-ink"
+        className={cx("block whitespace-nowrap font-extrabold leading-tight tabular-nums", gold ? "text-gold-text" : "text-ink")}
         style={{ fontSize: size ?? VALUE_SIZE }}
       >
         {children}
@@ -92,7 +92,7 @@ export function StatCard({ label, value, tone = "grey", selected = false, highli
       ) : state === "error" ? (
         <span className="mt-0.5 block text-[26px] font-extrabold leading-tight text-ink">—</span>
       ) : (
-        <FittedValue>{value}</FittedValue>
+        <FittedValue gold={highlight}>{value}</FittedValue>
       )}
       {state !== "loading" && note && <span className="mt-0.5 block text-small text-ink-muted">{note}</span>}
     </>

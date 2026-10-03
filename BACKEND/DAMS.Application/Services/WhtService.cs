@@ -539,11 +539,22 @@ namespace DAMS.Application.Services
             // one, and a supplier whose ATL status changed mid-period was genuinely withheld at two
             // different rates — collapsing that into one line at today's status would report a
             // filer rate against a non-filer heading.
+            //
+            // A payee with no vendor record is told apart by the name typed on the payment. Grouping on
+            // VendorId alone folded every such payee into one line, labelled with whichever name sorted
+            // first, so a statement for ten different suppliers listed one. A linked vendor is NOT split
+            // by the text on its rows: that text is a snapshot, and a renamed vendor must stay one line.
             // Both kinds of payment, folded together: one supplier line covers what they were paid
             // for goods whether those goods were consumed or capitalised. Grouped separately in SQL
             // for the same translation reason as the section totals above.
             var expenseRows = await WithheldExpenses(from, to)
-                .GroupBy(e => new { e.VendorId, e.WhtTaxSection, e.VendorFilerStatusAtEntry })
+                .GroupBy(e => new
+                {
+                    e.VendorId,
+                    e.WhtTaxSection,
+                    e.VendorFilerStatusAtEntry,
+                    Payee = e.VendorId == null ? e.Vendor : null
+                })
                 .Select(g => new VendorGroup(
                     g.Key.VendorId,
                     g.Key.WhtTaxSection,
@@ -556,7 +567,13 @@ namespace DAMS.Application.Services
                     g.Count()))
                 .ToListAsync(cancellationToken);
             var purchaseRows = await WithheldPurchases(from, to)
-                .GroupBy(p => new { p.VendorId, p.WhtTaxSection, p.VendorFilerStatusAtEntry })
+                .GroupBy(p => new
+                {
+                    p.VendorId,
+                    p.WhtTaxSection,
+                    p.VendorFilerStatusAtEntry,
+                    Payee = p.VendorId == null ? p.Vendor : null
+                })
                 .Select(g => new VendorGroup(
                     g.Key.VendorId,
                     g.Key.WhtTaxSection,
@@ -567,8 +584,16 @@ namespace DAMS.Application.Services
                     g.Count()))
                 .ToListAsync(cancellationToken);
 
+            // The same payee typed with another case or a stray space on an expense and on an asset
+            // purchase is still one payee, so typed names are compared trimmed and ignoring case.
             var rows = expenseRows.Concat(purchaseRows)
-                .GroupBy(r => new { r.VendorId, r.WhtTaxSection, r.VendorFilerStatusAtEntry })
+                .GroupBy(r => new
+                {
+                    r.VendorId,
+                    r.WhtTaxSection,
+                    r.VendorFilerStatusAtEntry,
+                    Payee = r.VendorId == null ? TypedPayee(r.FallbackName)?.ToUpperInvariant() : null
+                })
                 .Select(g => new VendorGroup(
                     g.Key.VendorId,
                     g.Key.WhtTaxSection,
@@ -592,7 +617,7 @@ namespace DAMS.Application.Services
                     return new WhtVendorLineDto
                     {
                         VendorId = r.VendorId,
-                        VendorName = vendor?.Name ?? r.FallbackName ?? "Unnamed vendor",
+                        VendorName = vendor?.Name ?? TypedPayee(r.FallbackName) ?? "Unnamed vendor",
                         Ntn = vendor?.Ntn,
                         Cnic = vendor?.Cnic,
                         // Name, NTN and CNIC are identity — the current record is the right one to
@@ -656,6 +681,9 @@ namespace DAMS.Application.Services
                 ? $"\"{text.Replace("\"", "\"\"")}\""
                 : text;
         }
+
+        /// <summary>The name typed on a payment, or null when it was left blank.</summary>
+        private static string? TypedPayee(string? name) => string.IsNullOrWhiteSpace(name) ? null : name.Trim();
 
         private sealed record VendorGroup(
             int? VendorId, string? WhtTaxSection, FilerStatus VendorFilerStatusAtEntry,

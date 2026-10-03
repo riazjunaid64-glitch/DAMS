@@ -76,7 +76,7 @@ function show(user: User | null = admin) {
       <ToastProvider>
         <Routes>
           <Route path="/finance/accounts" element={<FinanceAccountsPage user={user} />} />
-          <Route path="/finance/settings" element={<p>Finance settings page</p>} />
+          <Route path="/finance/tax" element={<p>Tax to FBR page</p>} />
           <Route path="/" element={<p>Home page</p>} />
         </Routes>
       </ToastProvider>
@@ -905,11 +905,11 @@ describe("Manage accounts: Account details", () => {
     expect(dialog().getByText("Bank · Seven Ventures · GL 1004 · Inactive")).toBeTruthy();
   });
 
-  it("shows the tax-held notice with Record deposit, which opens Finance settings", async () => {
+  it("shows the tax-held notice with Record deposit, which opens Tax to FBR", async () => {
     await open();
     expect(dialog().getByText("Includes Rs 59,500 tax held for FBR")).toBeTruthy();
     fireEvent.click(button("Record deposit", dialog()));
-    expect(await screen.findByText("Finance settings page")).toBeTruthy();
+    expect(await screen.findByText("Tax to FBR page")).toBeTruthy();
   });
 
   it("shows the tax-held notice only for what is still held", async () => {

@@ -145,7 +145,3 @@ export function formatRs(value: number): string {
 export function formatRate(value: number): string {
   return `${Number(value.toFixed(4))}%`;
 }
-
-export function filerLabel(status: FilerStatus): string {
-  return status === "NonFiler" ? "Non-filer" : status;
-}

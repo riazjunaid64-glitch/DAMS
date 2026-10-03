@@ -25,6 +25,19 @@ describe("statusTone", () => {
   });
 });
 
+describe("filer statuses", () => {
+  it("colours the filer status tax is withheld under", () => {
+    expect(statusTone("Filer")).toBe("green");
+    expect(statusTone("NonFiler")).toBe("red");
+    expect(statusTone("Unknown")).toBe("orange");
+  });
+  it("writes NonFiler as 'Non-filer'", () => {
+    expect(statusLabel("NonFiler")).toBe("Non-filer");
+    expect(statusLabel("Filer")).toBe("Filer");
+    expect(statusLabel("Unknown")).toBe("Unknown");
+  });
+});
+
 describe("booking statuses", () => {
   it("colours every booking, installment, commission, rebate and refund status", () => {
     const expected: Record<string, string> = {

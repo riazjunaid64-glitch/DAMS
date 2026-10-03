@@ -5566,6 +5566,61 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// The s.165 supplier statement groups an unlinked payee by the name typed on the payment, with a
+    /// conditional in the GROUP BY key. In memory that is evaluated in C#; only SQL Server shows whether
+    /// the query translates, and that two payees really come back as two lines — not one line named
+    /// after whichever sorts first, which is how every unlinked payee used to be reported.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheSupplierStatement_TranslatesToSql_AndKeepsTypedPayeesApart()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+        var bank = new FinanceAccount
+        {
+            Name = "Statement Bank Probe", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Bank, IsActive = true
+        };
+        var vendor = new Vendor { Name = "Linked Supplier", FilerStatus = FilerStatus.Filer };
+        db.FinanceAccounts.Add(bank);
+        db.Vendors.Add(vendor);
+        await db.SaveChangesAsync();
+
+        Expense Withheld(string? payee, int? vendorId, string? snapshot, decimal gross, decimal tax) => new()
+        {
+            FinanceAccountId = bank.Id, Amount = gross, Category = "Cement", Vendor = payee ?? snapshot, VendorId = vendorId,
+            Date = new DateTime(2026, 9, 10), WhtApplied = true, WhtAmount = tax, WhtTaxSection = "153(1)(a)",
+            VendorFilerStatusAtEntry = vendorId is null ? FilerStatus.Unknown : FilerStatus.Filer
+        };
+        db.Expenses.AddRange(
+            Withheld("ABC Traders", null, null, 40_000m, 3_200m),
+            Withheld("abc traders ", null, null, 10_000m, 800m),
+            Withheld("XYZ Steel", null, null, 60_000m, 4_800m),
+            Withheld(null, null, null, 5_000m, 400m),
+            // A linked vendor whose rows carry two spellings of the name is still one line.
+            Withheld(null, vendor.Id, "Linked Supplier", 100_000m, 1_000m),
+            Withheld(null, vendor.Id, "Linked Supplier (old name)", 50_000m, 500m));
+        await db.SaveChangesAsync();
+
+        var lines = await new WhtService(db, new FinanceAccountService(db)).GetByVendorAsync(null, null);
+
+        Assert.Equal(4, lines.Count);
+        var abc = Assert.Single(lines, l => l.VendorId is null && l.VendorName.Trim().Equals("ABC Traders", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(50_000m, abc.GrossAmount);
+        Assert.Equal(4_000m, abc.WhtAmount);
+        Assert.Equal(60_000m, Assert.Single(lines, l => l.VendorName == "XYZ Steel").GrossAmount);
+        Assert.Equal(5_000m, Assert.Single(lines, l => l.VendorName == "Unnamed vendor").GrossAmount);
+        var linked = Assert.Single(lines, l => l.VendorId == vendor.Id);
+        Assert.Equal("Linked Supplier", linked.VendorName);
+        Assert.Equal(150_000m, linked.GrossAmount);
+        Assert.Equal(1_500m, linked.WhtAmount);
+        Assert.Equal(10_700m, lines.Sum(l => l.WhtAmount));
+    }
+
+    /// <summary>
     /// A new account with an opening balance is an account plus its "Created" history row, written in one
     /// retried transaction. A transient failure after the account insert, before the commit, or after a
     /// commit whose answer is lost must still end with exactly one account and one history row that

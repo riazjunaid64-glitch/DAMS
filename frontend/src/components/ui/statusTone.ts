@@ -48,11 +48,16 @@ const TONES: Record<string, StatusTone> = {
   needed: "orange",
   uploaded: "green",
   notneeded: "grey",
+  // Suppliers and vendors: the filer status tax is withheld under (KAN-95, KAN-96).
+  filer: "green",
+  nonfiler: "red",
+  unknown: "orange",
 };
 
 /** Words that differ from the plain sentence-case of the status. */
 const LABELS: Record<string, string> = {
   paymentplanactive: "Payment plan",
+  nonfiler: "Non-filer",
 };
 
 const normalise = (status: string) => status.toLowerCase().replace(/[\s_-]+/g, "");

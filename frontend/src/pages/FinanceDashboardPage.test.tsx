@@ -179,6 +179,7 @@ describe("Finance home", () => {
     show();
     expect(await screen.findByText(`Tax to deposit to FBR: ${formatMoney(184350)}`)).toBeTruthy();
     expect(screen.queryByText("Tax payable could not be loaded.")).toBeNull();
+    expect(screen.getByRole("link", { name: "View" }).getAttribute("href")).toBe("/finance/tax");
   });
 
   it("does not warn when no tax is payable", async () => {
@@ -429,7 +430,8 @@ describe("Finance home", () => {
     const sheet = await screen.findByRole("dialog", { name: "More actions" });
     expect(within(sheet).getByRole("button", { name: "Add revenue" })).toBeTruthy();
     expect(within(sheet).getByRole("link", { name: "Financial reports" })).toBeTruthy();
-    expect(within(sheet).getByRole("link", { name: "Tax to FBR" })).toBeTruthy();
+    expect(within(sheet).getByRole("link", { name: "Tax to FBR" }).getAttribute("href")).toBe("/finance/tax");
+    expect(within(sheet).getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/finance/settings");
   });
 
   it("waits for the signed-in user and tells someone without access", () => {
