@@ -5,7 +5,7 @@ import { Button, ConfirmDialog, FilterBar, IconDownload, IconPlus, PageHeader, T
 import { pageAccess } from "../features/access/permissions.ts";
 import { DepositDialog } from "../features/finance/taxFbr/DepositDialog.tsx";
 import { DepositsList } from "../features/finance/taxFbr/DepositsList.tsx";
-import { deleteMessage, deleteTitle, PAGE_SIZE } from "../features/finance/taxFbr/rules.ts";
+import { clampPage, deleteMessage, deleteTitle, PAGE_SIZE } from "../features/finance/taxFbr/rules.ts";
 import { PeriodLine, SummaryCards } from "../features/finance/taxFbr/Summary.tsx";
 import { SuppliersList } from "../features/finance/taxFbr/SuppliersList.tsx";
 import { useCashAccounts, useRangeData } from "../features/finance/taxFbr/useTaxFbrData.ts";
@@ -61,6 +61,12 @@ export default function TaxToFbrPage({ user }: { user: User | null }) {
   }, []);
   const resetRange = useCallback(() => changeRange({ from: "", to: "" }), [changeRange]);
 
+  // A delete can empty the last page. The list already shows the new last page; storing it as well
+  // means the list growing again later does not jump back to a page the user left.
+  const depositPage = deposits.data ? clampPage(pages.deposits, deposits.data.length) : pages.deposits;
+  const supplierPage = suppliers.data ? clampPage(pages.suppliers, suppliers.data.length) : pages.suppliers;
+  if (depositPage !== pages.deposits || supplierPage !== pages.suppliers) setPages({ deposits: depositPage, suppliers: supplierPage });
+
   if (!allowed) {
     return access === "deny" ? null : (
       <div role="status" aria-busy="true" className={page}>
@@ -108,10 +114,14 @@ export default function TaxToFbrPage({ user }: { user: User | null }) {
   };
 
   const summaryState = summary.data ? "ready" : summary.error ? "error" : "loading";
-  // An answer for an earlier range is not shown under this one's name, and the line waits for the
-  // supplier list so it does not appear and then grow a clause.
-  const showLine = ranged && summary.data !== null && summary.dataKey === key && !suppliers.loading;
-  const supplierCount = suppliers.data !== null && suppliers.dataKey === key ? suppliers.data.length : null;
+  // The line is one sentence about this range: the figures and the supplier rows it counts. An answer
+  // for an earlier range is not shown under this one's name, and without the supplier list there is no
+  // honest count, so the line waits for it (and stays away if it fails; that list shows its own error).
+  const supplierCount = !suppliers.loading && suppliers.data !== null && suppliers.dataKey === key ? suppliers.data.length : null;
+  const showLine = ranged && summary.data !== null && summary.dataKey === key && supplierCount !== null;
+  // A new deposit opens on what is owed, so it waits for that figure. If the figure failed there is
+  // nothing to wait for: the deposit can still be recorded, and the popup then opens with no amount.
+  const awaitingOwed = summary.data === null && summary.loading;
 
   return (
     <div className={page}>
@@ -120,19 +130,19 @@ export default function TaxToFbrPage({ user }: { user: User | null }) {
         className="max-md:flex-row max-md:items-center max-md:justify-between"
         actions={isPhone ? (
           <>
-            <Button icon={<IconPlus size={16} />} onClick={() => openDeposit(null)}>Record deposit</Button>
+            <Button icon={<IconPlus size={16} />} disabled={awaitingOwed} onClick={() => openDeposit(null)}>Record deposit</Button>
             <Button variant="outline" iconOnly icon={<IconDownload size={18} />} aria-label="Export" loading={exporting} onClick={() => void exportStatement()} />
           </>
         ) : (
           <>
             <Button variant="outline" icon={<IconDownload size={16} />} loading={exporting} onClick={() => void exportStatement()}>Export</Button>
-            <Button icon={<IconPlus size={16} />} onClick={() => openDeposit(null)}>Record deposit</Button>
+            <Button icon={<IconPlus size={16} />} disabled={awaitingOwed} onClick={() => openDeposit(null)}>Record deposit</Button>
           </>
         )}
       />
 
       <SummaryCards summary={summary.data} state={summaryState} error={summary.error} onRetry={summary.reload} />
-      {showLine && summary.data && <PeriodLine summary={summary.data} supplierCount={supplierCount} />}
+      {showLine && summary.data && supplierCount !== null && <PeriodLine summary={summary.data} supplierCount={supplierCount} />}
 
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-4">
         <Tabs

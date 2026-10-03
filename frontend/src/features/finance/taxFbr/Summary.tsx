@@ -36,8 +36,8 @@ export function SummaryCards({ summary, state, error, onRetry }: CardsProps) {
 
 type LineProps = {
   summary: Pick<WhtPayableSummary, "withheldInPeriod" | "paymentCount" | "depositedInPeriod">;
-  /** The rows of the By supplier list; null while that list has not answered, and then the clause is left out. */
-  supplierCount: number | null;
+  /** The rows of the By supplier list, so the sentence always matches that list. */
+  supplierCount: number;
 };
 
 const amount = (value: number) => <b className="font-extrabold text-ink">{formatRs(value)}</b>;
@@ -47,7 +47,7 @@ export function PeriodLine({ summary, supplierCount }: LineProps) {
   return (
     <p className="m-0 font-ui text-small text-ink-muted">
       In the selected period: withheld {amount(summary.withheldInPeriod)} from {paymentsText(summary.paymentCount)}
-      {supplierCount !== null && <> to {suppliersText(supplierCount)}</>} · deposited {amount(summary.depositedInPeriod)}
+      {" "}to {suppliersText(supplierCount)} · deposited {amount(summary.depositedInPeriod)}
     </p>
   );
 }

@@ -31,11 +31,6 @@ describe("the period line", () => {
     expect(line()).not.toContain("6 suppliers");
   });
 
-  it("leaves the supplier clause out until the list has answered", () => {
-    render(<PeriodLine summary={summary} supplierCount={null} />);
-    expect(line()).toBe("In the selected period: withheld Rs 412,300 from 18 payments · deposited Rs 412,000");
-  });
-
   it("makes the amounts bold", () => {
     render(<PeriodLine summary={summary} supplierCount={6} />);
     expect([...document.querySelectorAll("b")].map((node) => node.textContent)).toEqual(["Rs 412,300", "Rs 412,000"]);
