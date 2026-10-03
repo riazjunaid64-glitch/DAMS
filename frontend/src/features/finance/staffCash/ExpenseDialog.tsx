@@ -103,7 +103,7 @@ export function ExpenseDialog({ holder, categories, vendors, projects, lookupsEr
   const categoryOptions = categories
     .filter((category) => category.isActive)
     .map((category) => ({ value: String(category.id), label: categoryLabel(category) }));
-  const projectOptions = [{ value: "", label: "All" }, ...projects.map((project) => ({ value: String(project.id), label: project.projectName }))];
+  const projectOptions = [{ value: "", label: "General — no project" }, ...projects.map((project) => ({ value: String(project.id), label: project.projectName }))];
   const payeeOptions = [
     { value: ONE_OFF_PAYEE, label: "One-off payee" },
     ...vendors

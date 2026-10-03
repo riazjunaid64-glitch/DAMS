@@ -6,7 +6,7 @@ import { RecordProof } from "../home/proof.tsx";
 import { cashAccountChoices } from "../loans/rules.ts";
 import type { CashAccount } from "../loans/types.ts";
 import { staffCashApi } from "./api.ts";
-import { MOVEMENT_TYPES, accountLabel, giveAction, movementDate, movementTitle, returnAmount, type MovementIntent } from "./rules.ts";
+import { accountLabel, giveAction, movementChoices, movementDate, movementTitle, returnAmount, type MovementIntent } from "./rules.ts";
 import type { Holder, HistoryItem, MovementType } from "./types.ts";
 
 type Fields = { type: MovementType; amount: string; date: string; accountId: string; reference: string; note: string };
@@ -132,7 +132,7 @@ export function MovementDialog({ holder, intent, movement, cashAccounts, account
           label="Movement"
           required
           disabled={saving}
-          options={MOVEMENT_TYPES}
+          options={movementChoices(holder, movement?.movementType ?? null)}
           value={fields.type}
           onChange={(next) => set({ type: next as MovementType })}
         />

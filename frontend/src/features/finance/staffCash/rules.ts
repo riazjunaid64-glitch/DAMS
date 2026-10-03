@@ -74,6 +74,17 @@ export const MOVEMENT_TYPES: { value: MovementType; label: string }[] = [
   { value: "FundsReturned", label: "Cash returned (staff → account)" },
 ];
 
+/**
+ * What the Movement dropdown offers. Cash can only be returned while the person holds some, so a
+ * dialog opened to give money or settle what is owed cannot be switched into a return; a correction
+ * of a return keeps the option it already has.
+ */
+export function movementChoices(holder: Pick<Holder, "isActive" | "currentBalance">, correcting: MovementType | null) {
+  return canReturnCash(holder) || correcting === "FundsReturned"
+    ? MOVEMENT_TYPES
+    : MOVEMENT_TYPES.filter((choice) => choice.value === "FundsGiven");
+}
+
 export const accountLabel = (type: MovementType) => (type === "FundsGiven" ? "Paid from account" : "Returned to account");
 
 /** The popup's name follows the movement chosen; a settle keeps its name while the movement is still money given. */

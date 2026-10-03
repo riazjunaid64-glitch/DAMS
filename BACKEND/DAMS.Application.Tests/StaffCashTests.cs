@@ -256,6 +256,95 @@ public sealed class StaffCashTests
     }
 
     [Fact]
+    public async Task CashReturned_NeverExceedsWhatThePersonHolds_OnANewMovementOrACorrection()
+    {
+        await using var context = Context();
+        var cash = new FinanceAccount
+        {
+            Name = "Cash", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Cash, OpeningBalance = 100_000m, IsActive = true
+        };
+        context.FinanceAccounts.Add(cash);
+        var category = Category(1, "Site expense");
+        context.ExpenseCategories.Add(category);
+        await context.SaveChangesAsync();
+        var accounts = new FinanceAccountService(context);
+        var staff = new StaffCashService(context, accounts, TestAttachments.Writer());
+        var finance = Finance(context, accounts);
+        var owed = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Owed" });
+        var holding = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Holding" });
+        var day = PakistanTime.Today.AddDays(-3);
+        SaveStaffCashTransferDto Dto(StaffCashMovementType type, decimal amount, string? token = null) => new()
+        {
+            Type = type, Amount = amount, Date = day, CounterpartyFinanceAccountId = cash.Id, ConcurrencyToken = token
+        };
+
+        // The company owes this person Rs 40: there is nothing to give back.
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        {
+            FinanceAccountId = owed.FinanceAccountId, CategoryId = category.Id, Amount = 40m, Date = day
+        }, 1);
+        var refusedWhenOwed = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.RecordTransferAsync(owed.FinanceAccountId, Dto(StaffCashMovementType.FundsReturned, 10m), 1));
+        Assert.Equal("This person is not holding any company cash to return.", refusedWhenOwed.Message);
+
+        // Holding Rs 10: Rs 50 cannot "come back", Rs 10 can.
+        await staff.RecordTransferAsync(holding.FinanceAccountId, Dto(StaffCashMovementType.FundsGiven, 10m), 1);
+        var tooMuch = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.RecordTransferAsync(holding.FinanceAccountId, Dto(StaffCashMovementType.FundsReturned, 50m), 1));
+        Assert.Contains("more than the Rs 10.00", tooMuch.Message);
+        var back = await staff.RecordTransferAsync(holding.FinanceAccountId, Dto(StaffCashMovementType.FundsReturned, 10m), 1);
+        Assert.Equal(0m, (await staff.GetStatementAsync(holding.FinanceAccountId, 0, 20)).Holder.CurrentBalance);
+
+        // Correcting that return to a larger amount is refused too; correcting it to the same or less is not.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => staff.UpdateTransferAsync(
+            holding.FinanceAccountId, back.RecordId, Dto(StaffCashMovementType.FundsReturned, 11m, back.ConcurrencyToken), 1));
+        await staff.UpdateTransferAsync(
+            holding.FinanceAccountId, back.RecordId, Dto(StaffCashMovementType.FundsReturned, 4m, back.ConcurrencyToken), 1);
+        Assert.Equal(6m, (await staff.GetStatementAsync(holding.FinanceAccountId, 0, 20)).Holder.CurrentBalance);
+
+        // A correction cannot turn a handover into a return of cash that was never held.
+        var given = await staff.RecordTransferAsync(owed.FinanceAccountId, Dto(StaffCashMovementType.FundsGiven, 100m), 1);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => staff.UpdateTransferAsync(
+            owed.FinanceAccountId, given.RecordId, Dto(StaffCashMovementType.FundsReturned, 1m, given.ConcurrencyToken), 1));
+    }
+
+    [Fact]
+    public async Task APageStaysConsistentWithItself_WhenAMovementIsRecordedBetweenTwoPageRequests()
+    {
+        await using var context = Context();
+        var cash = new FinanceAccount
+        {
+            Name = "Cash", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Cash, OpeningBalance = 100_000m, IsActive = true
+        };
+        context.FinanceAccounts.Add(cash);
+        await context.SaveChangesAsync();
+        var staff = new StaffCashService(context, new FinanceAccountService(context), TestAttachments.Writer());
+        var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Kamran" });
+        async Task Give(int daysAgo) => await staff.RecordTransferAsync(holder.FinanceAccountId, new SaveStaffCashTransferDto
+        {
+            Type = StaffCashMovementType.FundsGiven, Amount = 1_000m,
+            Date = PakistanTime.Today.AddDays(-daysAgo), CounterpartyFinanceAccountId = cash.Id
+        }, 1);
+        for (var i = 5; i >= 1; i--) await Give(i);
+
+        var first = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 3);
+        await Give(0);
+        var second = await staff.GetStatementAsync(holder.FinanceAccountId, 3, 3);
+
+        // Whatever the shifted window holds, the page agrees with itself: its balances follow its own
+        // rows, the total counts what exists, and there is a next page only when rows remain.
+        Assert.Equal(6, second.TotalCount);
+        Assert.Equal(3, second.Items.Count);
+        Assert.False(second.HasMore);
+        Assert.Equal(first.Items[^1].RecordId, second.Items[0].RecordId);
+        Assert.Equal(first.Items[^1].RunningBalance, second.Items[0].RunningBalance);
+        Assert.Equal(3_000m, second.Items[0].RunningBalance);
+        Assert.Equal(1_000m, second.Items[^1].RunningBalance);
+    }
+
+    [Fact]
     public async Task APagePastTheEnd_IsEmptyButStillCountsEveryMovement_AndANegativeSkipStartsAtTheTop()
     {
         await using var context = Context();

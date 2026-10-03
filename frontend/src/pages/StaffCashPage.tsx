@@ -27,6 +27,9 @@ type Dialog =
 const page = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
 const ROOT = "/finance/staff-cash";
 
+// A transfer and an expense can share an id, so the kind is part of the key.
+const movementKey = (row: HistoryItem) => `${row.recordType}-${row.recordId}`;
+
 /**
  * Finance → Cash with staff: company money that has left the safe or the bank and is in a staff
  * member's hands. A desktop shows the people beside the open person and their movements; a phone
@@ -65,7 +68,7 @@ export default function StaffCashPage({ user }: { user: User | null }) {
     const statement = await staffCashApi.statement(personId, skip, take, signal);
     return { items: statement.items, totalCount: statement.totalCount, hasMore: statement.hasMore };
   }, [personId]);
-  const paged = usePagedList<HistoryItem>({ queryKey, fetchPage });
+  const paged = usePagedList<HistoryItem>({ queryKey, fetchPage, itemKey: movementKey });
   const mine = paged.rowsKey === queryKey;
   const movements: MovementsList = {
     rows: mine ? paged.rows : [],

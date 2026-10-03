@@ -25,12 +25,25 @@ export type PagedListPage<T> = {
   totalCount?: number | null;
 };
 
+/**
+ * Rows appended by Load more, minus any already on screen. Pages are offset windows, so a row
+ * recorded by someone else between two taps shifts every later page by one and the last row of the
+ * page before would come back as the first row of the next. Without a key, rows are appended as they are.
+ */
+export function appendRows<T>(current: readonly T[], next: readonly T[], itemKey?: (row: T) => string | number): T[] {
+  if (!itemKey) return [...current, ...next];
+  const seen = new Set(current.map(itemKey));
+  return [...current, ...next.filter((row) => !seen.has(itemKey(row)))];
+}
+
 export type UsePagedListOptions<T> = {
   /** Filter identity. A change resets the list to page 1. */
   queryKey: string;
   /** One page. Must honour `skip` and `take`. A late or aborted answer is ignored. */
   fetchPage: (query: PagedListQuery) => Promise<PagedListPage<T>>;
   pageSize?: number;
+  /** Identifies a row, so Load more never shows the same row twice when the list shifts underneath it. */
+  itemKey?: (row: T) => string | number;
 };
 
 export type UsePagedListResult<T> = {
@@ -88,12 +101,14 @@ export function pageAfterEmptyDelete(page: number, itemsOnPage: number): number 
  * that result. A failed Load more is retried as the same append. Answers that arrive late
  * are ignored (`isCurrentRowsRequest`).
  */
-export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_SIZE }: UsePagedListOptions<T>): UsePagedListResult<T> {
+export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_SIZE, itemKey }: UsePagedListOptions<T>): UsePagedListResult<T> {
   const isPhone = useIsPhone();
   const fetchRef = useRef(fetchPage);
+  const itemKeyRef = useRef(itemKey);
   useEffect(() => {
     fetchRef.current = fetchPage;
-  }, [fetchPage]);
+    itemKeyRef.current = itemKey;
+  }, [fetchPage, itemKey]);
 
   const [activeKey, setActiveKey] = useState(queryKey);
   const [request, setRequest] = useState<Request>({ page: 1, append: false, refresh: 0, intent: "load", phone: isPhone, pageSize, cover: false });
@@ -141,7 +156,7 @@ export function usePagedList<T>({ queryKey, fetchPage, pageSize = DEFAULT_PAGE_S
             return;
           }
         }
-        setRows((prev) => (append ? [...prev, ...items] : items));
+        setRows((prev) => (append ? appendRows(prev, items, itemKeyRef.current) : items));
         setRowsKey(activeKey);
         setRowsPage(page);
         setTotal(result.totalCount ?? null);

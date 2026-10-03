@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isCurrentRowsRequest, pageAfterEmptyDelete, usePagedList, type PagedListPage } from "./usePagedList.ts";
+import { appendRows, isCurrentRowsRequest, pageAfterEmptyDelete, usePagedList, type PagedListPage } from "./usePagedList.ts";
 
 function phone(matches: boolean) {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
@@ -18,6 +18,17 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+describe("appendRows", () => {
+  it("appends as they come when there is no key", () => {
+    expect(appendRows([1, 2], [2, 3])).toEqual([1, 2, 2, 3]);
+  });
+
+  it("drops a row the earlier page already showed, when a new row shifted the next page by one", () => {
+    const row = (id: number) => ({ id });
+    expect(appendRows([row(1), row(2)], [row(2), row(3)], (item) => item.id)).toEqual([row(1), row(2), row(3)]);
+  });
+});
 
 describe("pageAfterEmptyDelete", () => {
   it("steps back one page when a delete empties the last page", () => {

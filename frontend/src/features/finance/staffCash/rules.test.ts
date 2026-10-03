@@ -6,6 +6,7 @@ import {
   giveAction,
   holderActivity,
   holderStatus,
+  movementChoices,
   movementName,
   movementPlace,
   movementRef,
@@ -92,6 +93,20 @@ describe("person buttons", () => {
     expect(movementTitle("FundsReturned", "return", false)).toBe("Record cash returned");
     expect(movementTitle("FundsReturned", "give", false)).toBe("Record cash returned");
     expect(movementTitle("FundsGiven", "return", true)).toBe("Correct movement");
+  });
+});
+
+describe("movement choices", () => {
+  const values = (choices: { value: string }[]) => choices.map((choice) => choice.value);
+
+  it("offers a return only while the person holds cash, so a settle cannot be switched into one", () => {
+    expect(values(movementChoices(holder(), null))).toEqual(["FundsGiven", "FundsReturned"]);
+    expect(values(movementChoices(holder({ currentBalance: -40_000 }), null))).toEqual(["FundsGiven"]);
+    expect(values(movementChoices(holder({ currentBalance: 0 }), null))).toEqual(["FundsGiven"]);
+  });
+
+  it("keeps the return option when a return is being corrected", () => {
+    expect(values(movementChoices(holder({ currentBalance: 0 }), "FundsReturned"))).toEqual(["FundsGiven", "FundsReturned"]);
   });
 });
 

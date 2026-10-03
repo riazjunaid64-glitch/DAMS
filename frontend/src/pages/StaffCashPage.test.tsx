@@ -324,6 +324,13 @@ describe("Cash with staff: the open person", () => {
     expect(button("Record cash returned").disabled).toBe(true);
   });
 
+  it("does not offer Cash returned in a settle dialog for a person the company owes", async () => {
+    show("/finance/staff-cash/7");
+    await screen.findByText("Open since Aug 25, 2026 · 37 days");
+    fireEvent.click(button("Settle amount owed"));
+    expect(options(/Movement/)).toEqual(["Money given (account → staff)"]);
+  });
+
   it("ignores a slow answer for the person that was left", async () => {
     let finishOld: (value: Statement) => void = () => {};
     api.statement.mockImplementation((id) => id === 5
@@ -538,7 +545,7 @@ describe("Cash with staff: recording an expense", () => {
     expect(footerButton("Save").disabled).toBe(true);
     expect(options(/Category/)).toEqual(["Construction materials — s.153(1)(a)", "Fuel"]);
     expect(options(/Paid to/)).toEqual(["One-off payee", "City Hardware — Non-filer", "Al-Noor Steel — Filer"]);
-    expect(options(/Project/)).toEqual(["All", "Floria Heights"]);
+    expect(options(/Project/)).toEqual(["General — no project", "Floria Heights"]);
     expect(dialog().getByRole("textbox", { name: /Payee name/ })).toBeTruthy();
 
     pick(/Category/, "Construction materials — s.153(1)(a)");
@@ -606,6 +613,22 @@ describe("Cash with staff on a phone", () => {
     expect(where()).toBe("/finance/staff-cash/5");
     expect(await screen.findByRole("heading", { name: "Adeel Satti" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Cash with staff" })).toBeNull();
+  });
+
+  it("turns the ⋯ button off for an inactive person", async () => {
+    show("/finance/staff-cash/9");
+    await screen.findByText("Fully settled");
+    expect(button("Record an expense").disabled).toBe(true);
+    expect(button("More for Bilal Ahmed").disabled).toBe(true);
+  });
+
+  it("does not show a movement twice when Load more finds the list shifted by a new one", async () => {
+    api.statement.mockImplementation(async (_id, skip) => statementOf(adeel, skip === 0 ? [fuel] : [fuel, received], 3));
+    show("/finance/staff-cash/5");
+    await loaded();
+    fireEvent.click(button("Load more"));
+    await screen.findAllByText("Received from Meezan Bank");
+    expect(screen.getAllByText("Site visits")).toHaveLength(2);
   });
 
   it("shows movements as cards with Load more, and the money moves in a sheet", async () => {

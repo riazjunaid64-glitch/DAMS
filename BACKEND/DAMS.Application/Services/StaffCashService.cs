@@ -139,7 +139,11 @@ namespace DAMS.Application.Services
                 outstandingSince.GetValueOrDefault(staffFinanceAccountId));
 
             var ledger = LedgerQuery(ids);
-            var page = await NewestFirst(ledger).Skip(skip).Take(take).ToListAsync(cancellationToken);
+            // One row more than asked: whether there is a next page is read from the same query that
+            // returned this one, so it cannot disagree with the rows even if a movement is recorded
+            // while the request runs.
+            var window = await NewestFirst(ledger).Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            var page = window.Take(take).ToList();
 
             // Page numbers need a position, not a "what comes after this row", so a page is an
             // offset window. Its balances are worked out from the page's own first row, summed in
@@ -161,9 +165,10 @@ namespace DAMS.Application.Services
             {
                 Holder = holder,
                 Items = items,
-                // Already the count of every movement on this float, so the total costs no query.
-                TotalCount = holder.TransactionCount,
-                HasMore = skip + items.Count < holder.TransactionCount
+                // Already the count of every movement on this float, so the total costs no query. It
+                // was read before the page, so it is lifted to what the page itself proves exists.
+                TotalCount = window.Count == 0 ? holder.TransactionCount : Math.Max(holder.TransactionCount, skip + window.Count),
+                HasMore = window.Count > take
             };
         }
 
@@ -177,6 +182,7 @@ namespace DAMS.Application.Services
             ValidateTransfer(dto);
             await ValidateDateAsync(dto.Date, cancellationToken);
             await EnsureStaffAccountAsync(staffFinanceAccountId, requireActive: true, cancellationToken);
+            await EnsureCashCanBeReturnedAsync(staffFinanceAccountId, dto, null, cancellationToken);
             await _accounts.EnsureSelectableAsync(dto.CounterpartyFinanceAccountId, null, cancellationToken);
             var transfer = new StaffCashTransfer
             {
@@ -233,6 +239,7 @@ namespace DAMS.Application.Services
                     t => t.Id == transferId && t.StaffFinanceAccountId == staffFinanceAccountId, cancellationToken)
                 ?? throw new InvalidOperationException("Staff cash transfer not found.");
             ApplyToken(transfer, dto.ConcurrencyToken);
+            await EnsureCashCanBeReturnedAsync(staffFinanceAccountId, dto, transfer, cancellationToken);
             await _accounts.EnsureSelectableAsync(
                 dto.CounterpartyFinanceAccountId, transfer.CounterpartyFinanceAccountId, cancellationToken);
             transfer.Type = dto.Type;
@@ -656,6 +663,37 @@ namespace DAMS.Application.Services
         // Same three bounds as every other financial posting date — see FinanceDateRules.
         private Task ValidateDateAsync(DateTime date, CancellationToken cancellationToken) =>
             FinanceDateRules.EnsureAsync(_context, date, "Transfer date", cancellationToken);
+
+        /// <summary>
+        /// Cash can only come back while the person is holding some, and never more than they hold:
+        /// a larger "return" would push the float below zero and invent a payable the person never
+        /// earned. The screen switches the button off, but this is the rule. When a movement is being
+        /// corrected, the balance is taken without that movement's own effect, since the correction
+        /// replaces it.
+        /// </summary>
+        private async Task EnsureCashCanBeReturnedAsync(
+            int staffFinanceAccountId,
+            SaveStaffCashTransferDto dto,
+            StaffCashTransfer? replacing,
+            CancellationToken cancellationToken)
+        {
+            if (dto.Type != StaffCashMovementType.FundsReturned) return;
+            var opening = await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.Id == staffFinanceAccountId)
+                .Select(a => a.OpeningBalance)
+                .SingleAsync(cancellationToken);
+            var moved = await LedgerQuery([staffFinanceAccountId])
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+            var holding = opening + moved;
+            if (replacing != null)
+                holding -= replacing.Type == StaffCashMovementType.FundsGiven ? replacing.Amount : -replacing.Amount;
+            holding = Money(holding);
+            if (holding <= 0m)
+                throw new InvalidOperationException("This person is not holding any company cash to return.");
+            if (Money(dto.Amount) > holding)
+                throw new InvalidOperationException(
+                    $"Cash returned cannot be more than the Rs {holding:N2} this person is holding.");
+        }
 
         private static void ValidateTransfer(SaveStaffCashTransferDto dto)
         {

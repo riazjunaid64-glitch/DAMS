@@ -43,7 +43,7 @@ export function PersonPanel({ holder, isPhone, onExpense, onMovement }: Props) {
       {isPhone ? (
         <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] gap-2.5">
           <Button size="lg" fullWidth disabled={!holder.isActive} onClick={onExpense}>Record an expense</Button>
-          <Button size="lg" iconOnly variant="outline" icon={<IconMore size={18} />} aria-label={`More for ${holder.personName}`} onClick={() => setSheetOpen(true)} />
+          <Button size="lg" iconOnly variant="outline" disabled={!holder.isActive} icon={<IconMore size={18} />} aria-label={`More for ${holder.personName}`} onClick={() => setSheetOpen(true)} />
         </div>
       ) : (
         <div className="mt-4 flex flex-wrap items-center gap-2.5">
