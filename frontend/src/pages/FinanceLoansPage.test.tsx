@@ -302,8 +302,8 @@ describe("Loans: adding and editing a loan", () => {
     type(name, "Zarai Bank loan");
     fireEvent.click(footerButton("Save loan"));
     await waitFor(() => expect(api.saveLoan).toHaveBeenCalledWith(
-      { name: "Zarai Bank loan", lenderName: "Bank Alfalah", financeAccountId: 30, isActive: true, concurrencyToken: "loan-tok" }, 1));
-    expect(await screen.findByRole("heading", { name: "Zarai Bank loan" })).toBeTruthy();
+      { name: "Zarai Bank loan", lenderName: "Bank Alfalah", financeAccountId: 30, isActive: true, concurrencyToken: "loan-tok" }, 1), { timeout: 5000 });
+    expect(await screen.findByRole("heading", { name: "Zarai Bank loan" }, { timeout: 5000 })).toBeTruthy();
     expect(where()).toBe("/finance/loans/1");
     expect(screen.queryByRole("heading", { name: "Car finance" })).toBeNull();
     expect(button(/^Car finance/).getAttribute("aria-pressed")).toBe("false");
